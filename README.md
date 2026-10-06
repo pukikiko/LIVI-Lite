@@ -2,7 +2,12 @@
   <img alt='LIVI' src='docs/media/banner.png' width="1200" />
 </p>
 
-# LIVI – Linux In-Vehicle Infotainment
+# LIVI-Lite – Linux In-Vehicle Infotainment
+
+**LIVI-Lite** is an **Electron-free fork of [LIVI](https://github.com/f-io/LIVI)**.
+Upstream's Rust core and native GStreamer pipeline are kept as they are; the
+React/MUI renderer and the Electron main process are replaced by a small
+Rust + [Slint](https://slint.dev) UI.
 
 LIVI is an open-source **Apple CarPlay and Android Auto head unit**.
 
@@ -10,18 +15,17 @@ It is a standalone cross-platform head unit with a native, zero-copy GStreamer v
 
 > ## LIVI-Lite (this fork)
 >
-> This fork removes Electron entirely. Upstream's Rust core (the `livi-core`
-> binary in `native/livi-helperd`) is the service/projection backend, and the
-> React/MUI renderer is replaced by a small Rust + [Slint](https://slint.dev) UI
-> (`native/livi-ui`, software renderer). Core and UI talk over livi-core's
-> framed-JSON Unix socket (`$XDG_RUNTIME_DIR/livi/core.sock`); the legacy Node
-> service layer and its Electron shim are gone.
->
-> The video path was already Electron-free: `livi-gst-host` presents decoded
-> DMA-BUF planes directly to `livi-compositor` via `waylandsink`. The Slint window
-> renders *below* the video plane; the compositor routes input UI-first, so touch
-> still reaches the UI while projection is on screen. Swipe up from the bottom
-> edge (or right from the left edge) to reveal the shell.
+> - **Backend:** upstream's `livi-core` (`native/livi-helperd`) — the same
+>   service layer, projection drivers, helper and dongle stack as upstream.
+> - **UI:** `native/livi-ui`, a Slint surface on the software renderer. Core and
+>   UI talk over livi-core's framed-JSON Unix socket
+>   (`$XDG_RUNTIME_DIR/livi/core.sock`); there is no Node, Electron, Chromium or
+>   preload layer at runtime.
+> - **Video:** `livi-gst-host` presents decoded DMA-BUF planes directly to
+>   `livi-compositor` via `waylandsink`. The Slint window renders *below* the
+>   video plane, and the compositor routes input UI-first, so touch still reaches
+>   the UI while projection is on screen. Swipe up from the bottom edge (or right
+>   from the left edge) to reveal the shell.
 >
 > **Build**
 >
@@ -42,20 +46,30 @@ It is a standalone cross-platform head unit with a native, zero-copy GStreamer v
 > plain window on the desktop. Do not run LIVI with `sudo`: the core socket
 > lives in the user's `XDG_RUNTIME_DIR`.
 >
-> Current limitations of the fork: dash/aux secondary windows, telemetry
-> dashboards and the custom-page iframe are not ported yet; devices, settings,
-> media and projection are. The updater and the original AppImage installer are
-> not wired for the new layout.
+> **Upstream sync:** the fork work lives on the `native-ui` branch of
+> [pukikiko/LIVI-Lite](https://github.com/pukikiko/LIVI-Lite), merged against
+> `f-io/LIVI` `main` (`upstream` remote). The pre-Rust-core state is kept on the
+> `native-ui-pre-sync` branch and the `pre-rust-core-sync` tag.
+>
+> **Limitations of the fork:** dash/aux secondary windows, telemetry dashboards,
+> camera, the custom page, the updater and the AppImage/dmg packaging are not
+> ported yet. Devices, media, settings and projection are. Linux is the target
+> platform; the macOS video path (upstream draws the plane into the Electron
+> window) has no native-UI counterpart yet.
 
 
 ## Project Status
 
-![Release](https://img.shields.io/github/v/release/f-io/LIVI?label=release)
-![Main Version](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/f-io/LIVI/version/.github/badges/main-version.json)
-![TS Main](https://img.shields.io/github/actions/workflow/status/f-io/LIVI/typecheck.yml?branch=main&label=TS%20main)
-![Build Main](https://img.shields.io/github/actions/workflow/status/f-io/LIVI/build.yml?branch=main&label=build%20main)
-![Coverage Main](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/f-io/LIVI/version/.github/badges/main-coverage-main.json)
-![Coverage Renderer](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/f-io/LIVI/version/.github/badges/main-coverage-renderer.json)
+LIVI-Lite tracks upstream [`f-io/LIVI`](https://github.com/f-io/LIVI) `main` and
+is currently merged through upstream's Rust-core migration. Upstream's release,
+coverage and CI badges describe the Electron build and its TypeScript tests, so
+they do not apply to this fork.
+
+What works here: wired and wireless CarPlay, wired and (on Linux) wireless
+Android Auto, the devices, media, settings and projection screens, display
+calibration, GPS and telemetry plumbing. What is missing: the dash/aux windows,
+the telemetry/dashboards UI and the packaging/updater tooling (see the
+limitations note above).
 
 
 ## Native Connectivity
@@ -156,13 +170,17 @@ Configure under Settings → Appearance → Contrast / Gamma and Settings → Ap
 
 ## Dashboard
 
-The Dashboard is a WIP. While the IPC/socket telemetry payload already supports many signals, the UI exposes only a subset. Widgets and layouts will be extended over time.
+The Dashboard is a WIP. While the socket telemetry payload already supports many
+signals, upstream's Electron UI exposed only a subset of them — and the fork's
+Slint UI does not render the dashboards at all yet. The telemetry still reaches
+the UI (for example the speed readout on the projection strip).
 
 ### Telemetry CLI (local)
 
 To push test data into a running LIVI, use the CLI in `scripts/tools`. The full
 field list and routing lives in
-`src/main/shared/types/Telemetry.ts`.
+`native/livi-helperd/bin/livi-core/src/telemetry.rs`, fed by
+`cp_telemetry.rs` (CarPlay) and `aa_telemetry.rs` (Android Auto).
 
 ```bash
 pnpm -C scripts/tools install
@@ -212,6 +230,11 @@ On a Raspberry Pi 5, `/dev/ttyAMA0` on GPIO 14/15 (PIN 8/10) does not exist unti
 
 
 ## Multi-Display
+
+> [!NOTE]
+> Not ported to the native UI yet. Upstream's own compositor can still drive the
+> cluster stream from the Rust core, but the fork does not start Dash or Aux
+> windows.
 
 LIVI can run as multiple windows at once, each placeable on its own physical display.
 The Dash and Aux windows are freely assignable and can show the Dashes, the reverse camera or the media player. Assignment is not exclusive: any feature can be shown on one, several, or all windows at the same time.
@@ -264,6 +287,13 @@ Video: 1920x1080 - View Area: 0/0/0/0 (T/B/L/R) - Safe Area: 120/20/500/500 (T/B
 
 ## Installation
 
+> [!NOTE]
+> Everything below packages and installs **upstream's Electron build**. LIVI-Lite
+> does not publish an `install.sh`, AppImage or dmg yet — build from source (see
+> [Clone & Build](#clone--build)). The script and downloads are kept here because
+> the fork tracks upstream and will adopt its packaging again once the native UI
+> is wired into it.
+
 > [!IMPORTANT]
 > LIVI requires **OpenGL ES 3.x**.
 
@@ -312,19 +342,17 @@ After this, the app will launch normally and future updates will work without ad
 
 ## Build Environment
 
-![Node](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/f-io/LIVI/version/.github/badges/main-node.json)
-![pnpm](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/f-io/LIVI/version/.github/badges/main-pnpm.json)
-![electron](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/f-io/LIVI/version/.github/badges/main-electron.json)
-![chrome](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/f-io/LIVI/version/.github/badges/main-electron-date.json)
-![release](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/f-io/LIVI/version/.github/badges/main-electron-chromium.json)
-![gstreamer](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/f-io/LIVI/version/.github/badges/main-gstreamer.json)
+LIVI-Lite builds with the same toolchain as upstream minus Electron: **Node.js
+24.x** (only for the build scripts and `pnpm`), **Rust** pinned by
+`rust-toolchain.toml`, and **GStreamer 1.x** development packages. There is no
+Electron, Chromium or TypeScript toolchain in this fork.
 
 ### System Requirements (build)
 
 Make sure the following packages and tools are installed on your system before building. The lists below cover both building and running, including everything native CarPlay needs:
 
-- **Node.js 24.x** (with `corepack` for `pnpm`)
-- **Rust** (via [rustup](https://rustup.rs), which installs the version pinned in `rust-toolchain.toml`): builds everything native, that is `livi-helperd`, `livi-compositor` and `livi-gst-host`.
+- **Node.js 24.x** (with `corepack` for `pnpm`) — used by the build scripts, not at runtime
+- **Rust** (via [rustup](https://rustup.rs), which installs the version pinned in `rust-toolchain.toml`): builds everything, that is `livi-core`, `livi-helperd`, `livi-compositor`, `livi-gst-host` and the Slint `livi-ui`.
 - **build-essential** (Linux: includes `gcc`, `g++`, `make`, etc.)
 - **libgstreamer1.0-dev** + **libgstreamer-plugins-base1.0-dev** (required to build the `livi-gst-host` binary)
 - **pkg-config**, **cmake** (AWS-LC build), **libwayland-dev** + **libxkbcommon-dev** (Linux only: the embedded Wayland compositor links both)
@@ -366,27 +394,24 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 
 Fedora has no `rfkill` package, the command comes with `util-linux`. `libspa-0.2-bluetooth` is a Debian name too: it holds PipeWire's Bluetooth plugin, which Fedora ships inside `pipewire-libs`. Wireless Android Auto needs that plugin because the phone will only start a session over an HFP connection, and PipeWire is what puts HFP into the adapter's service record. LIVI's package check probes for the plugin's directory rather than a package name, so it reports the gap on any distro. Everything else, including wireless CarPlay, works the same.
 
-On macOS, building needs only Node.js, pnpm and Rust.
+On macOS only Node.js, pnpm and Rust are needed to compile, but the fork does
+not wire video or windows on macOS yet — Linux is the target platform.
 
 ### Clone & Build
 
 ```bash
-# Git clone
-git clone --branch main --single-branch https://github.com/f-io/LIVI.git \
-  && cd LIVI
+# Git clone (fork work lives on native-ui)
+git clone --branch native-ui --single-branch https://github.com/pukikiko/LIVI-Lite.git \
+  && cd LIVI-Lite
 
-# Install dependencies from lockfile
-pnpm run install:ci
+# Install the build tooling (biome, husky, lint-staged)
+pnpm install --ignore-scripts
 
-# --- Build targets ---
+# All Rust targets plus the Slint UI
+pnpm run build
 
-# Linux (AppImage)
-pnpm run build:linux:arm64         # ARM
-pnpm run build:linux:x64           # X86_64
-
-# macOS (dmg)
-pnpm run build:mac:arm64           # Apple Silicon
-pnpm run build:mac:x64             # Intel
+# livi-core starts the compositor and the UI
+pnpm start
 ```
 
 
