@@ -1,16 +1,13 @@
-//! Framing of the gst-host control protocol.
-//!
-//! The main process and the host exchange length-prefixed messages: four bytes
-//! of payload length in host order, then one byte of opcode, four bytes of id,
-//! and the rest. A payload shorter than those five bytes carries nothing and is
-//! skipped.
+//! Framing of the gst-host control protocol: four bytes of payload length in
+//! host order, then one byte of opcode, four bytes of id and the rest. A
+//! payload shorter than five bytes is skipped.
 
 pub mod feed;
+pub mod ui_planes;
 
 const LEN_BYTES: usize = 4;
 const HEAD_BYTES: usize = 5;
 
-/// One complete message.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Message {
     pub op: u8,
@@ -18,7 +15,6 @@ pub struct Message {
     pub rest: Vec<u8>,
 }
 
-/// Collects bytes until whole messages come out.
 #[derive(Default)]
 pub struct Framer {
     buf: Vec<u8>,
@@ -33,7 +29,6 @@ impl Framer {
         self.buf.extend_from_slice(chunk);
     }
 
-    /// The next complete message, or None while one is still arriving.
     pub fn next_message(&mut self) -> Option<Message> {
         loop {
             if self.buf.len() < LEN_BYTES {
@@ -58,7 +53,7 @@ impl Framer {
     }
 }
 
-/// The wire form of a reply.
+/// Encodes requests as well as replies.
 pub fn encode_reply(op: u8, id: u32, rest: &[u8]) -> Vec<u8> {
     let len = (HEAD_BYTES + rest.len()) as u32;
     let mut out = Vec::with_capacity(LEN_BYTES + len as usize);
@@ -69,9 +64,8 @@ pub fn encode_reply(op: u8, id: u32, rest: &[u8]) -> Vec<u8> {
     out
 }
 
-/// The plane the main stream is drawn on.
 pub const PLANE_MAIN: u32 = 0x7a00_0001;
-/// The receiver id whose frames every cluster plane shares.
+pub const PLANE_CLUSTER_RECV: u32 = 0x7a00_0010;
 pub const CLUSTER_RECV_ID: u32 = 0x7a00_0010;
 pub const CLUSTER_PLANE_MIN: u32 = 0x7a00_0011;
 pub const CLUSTER_PLANE_MAX: u32 = 0x7a00_0013;
@@ -80,9 +74,42 @@ pub fn is_cluster_plane(id: u32) -> bool {
     (CLUSTER_PLANE_MIN..=CLUSTER_PLANE_MAX).contains(&id)
 }
 
-/// The stream a plane is fed from: cluster planes share one, any other has its own.
 pub fn feeder_of(plane_id: u32) -> u32 {
     if is_cluster_plane(plane_id) { CLUSTER_RECV_ID } else { plane_id }
+}
+
+/// The cluster plane ids follow this order.
+pub const SCREENS: [&str; 3] = ["main", "dash", "aux"];
+pub const MAIN_TAG: &str = "main";
+
+pub fn cluster_tag(screen: &str) -> String {
+    format!("cluster-{screen}")
+}
+
+pub fn plane_place(id: u32) -> Option<(String, &'static str)> {
+    if id == PLANE_MAIN {
+        return Some((MAIN_TAG.into(), SCREENS[0]));
+    }
+    let screen = SCREENS.get(id.checked_sub(CLUSTER_PLANE_MIN)? as usize)?;
+    Some((cluster_tag(screen), screen))
+}
+
+const CODEC_MAX: usize = 15;
+
+/// `[1B codecLen][codec ascii][codec_data]`
+pub fn plane_body(codec: &str, codec_data: &[u8]) -> Vec<u8> {
+    let codec = &codec.as_bytes()[..codec.len().min(CODEC_MAX)];
+    let mut rest = Vec::with_capacity(1 + codec.len() + codec_data.len());
+    rest.push(codec.len() as u8);
+    rest.extend_from_slice(codec);
+    rest.extend_from_slice(codec_data);
+    rest
+}
+
+pub fn parse_plane_body(rest: &[u8]) -> Option<(String, &[u8])> {
+    let len = usize::from(*rest.first()?).min(CODEC_MAX);
+    let codec = rest.get(1..1 + len)?;
+    Some((String::from_utf8_lossy(codec).into_owned(), &rest[1 + len..]))
 }
 
 #[cfg(test)]
@@ -151,6 +178,24 @@ mod tests {
         assert_eq!(f.next_message(), None);
         f.push(&[1, 2, 3]);
         assert_eq!(f.next_message(), None);
+    }
+
+    #[test]
+    fn every_plane_has_its_tag_and_screen() {
+        assert_eq!(plane_place(PLANE_MAIN), Some(("main".into(), "main")));
+        assert_eq!(plane_place(CLUSTER_PLANE_MIN + 1), Some(("cluster-dash".into(), "dash")));
+        assert_eq!(plane_place(CLUSTER_PLANE_MAX), Some(("cluster-aux".into(), "aux")));
+        assert_eq!(plane_place(PLANE_CLUSTER_RECV), None);
+        assert_eq!(plane_place(CLUSTER_PLANE_MAX + 1), None);
+    }
+
+    #[test]
+    fn a_plane_body_comes_back_apart() {
+        let body = plane_body("h265", &[1, 2]);
+        assert_eq!(body, [&[4u8][..], b"h265", &[1, 2]].concat());
+        assert_eq!(parse_plane_body(&body), Some(("h265".into(), &[1u8, 2][..])));
+        assert_eq!(parse_plane_body(&[4, b'h', b'2']), None);
+        assert_eq!(parse_plane_body(&[]), None);
     }
 
     #[test]

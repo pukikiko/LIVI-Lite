@@ -1,13 +1,4 @@
-//! ChaCha20-Poly1305 (RFC 8439) N-API addon for CarPlay frame crypto.
-//!
-//! Exports `seal`/`open`, loaded in-process via `require('livi-crypto')`.
-//! The AEAD comes from aws-lc-rs (assembly ChaCha20/Poly1305, NEON on aarch64).
-
 use aws_lc_rs::aead::{Aad, CHACHA20_POLY1305, LessSafeKey, Nonce, UnboundKey};
-#[cfg(feature = "node")]
-use napi::bindgen_prelude::Buffer;
-#[cfg(feature = "node")]
-use napi_derive::napi;
 
 const TAG_LEN: usize = 16;
 const KEY_LEN: usize = 32;
@@ -46,24 +37,6 @@ pub fn open_impl(key_raw: &[u8], nonce_raw: &[u8], ct: &[u8], aad: &[u8]) -> Opt
     Some(buf)
 }
 
-/// seal(key: Buffer(32), nonce: Buffer(12), pt: Buffer, aad?: Buffer)
-///   -> Buffer(ciphertext + 16-byte tag). Throws on bad key/nonce sizes.
-#[cfg(feature = "node")]
-#[napi]
-pub fn seal(key: Buffer, nonce: Buffer, pt: Buffer, aad: Option<Buffer>) -> napi::Result<Buffer> {
-    seal_impl(&key, &nonce, &pt, aad.as_deref().unwrap_or(&[]))
-        .map(Buffer::from)
-        .ok_or_else(|| napi::Error::from_reason("seal: key must be 32 and nonce 12 bytes"))
-}
-
-/// open(key: Buffer(32), nonce: Buffer(12), ct: Buffer(>=16), aad?: Buffer)
-///   -> Buffer(plaintext) on a valid tag, null on auth failure or bad arguments.
-#[cfg(feature = "node")]
-#[napi]
-pub fn open(key: Buffer, nonce: Buffer, ct: Buffer, aad: Option<Buffer>) -> Option<Buffer> {
-    open_impl(&key, &nonce, &ct, aad.as_deref().unwrap_or(&[])).map(Buffer::from)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -72,7 +45,6 @@ mod tests {
         (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
     }
 
-    // RFC 8439 §2.8.2 AEAD test vector.
     const RFC_KEY: &str = "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f";
     const RFC_NONCE: &str = "070000004041424344454647";
     const RFC_AAD: &str = "50515253c0c1c2c3c4c5c6c7";

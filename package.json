@@ -1,6 +1,6 @@
 {
   "name": "LIVI",
-  "version": "9.2.0",
+  "version": "9.3.0",
   "description": "LIVI-Lite - native CarPlay & Android Auto head unit (no Electron)",
   "author": "Lasse Heitgres",
   "contributors": [
@@ -9,41 +9,26 @@
   ],
   "homepage": "https://f-io.dev",
   "license": "GPL-3.0-or-later",
-  "packageManager": "pnpm@12.8.1",
+  "packageManager": "pnpm@12.9.1",
   "scripts": {
     "format": "biome format --write .",
     "lint": "biome check --write .",
     "lint:check": "biome lint .",
-    "typecheck": "tsc --noEmit -p tsconfig.node.json --composite false",
-    "install:ci": "pnpm install --frozen-lockfile --ignore-scripts",
-    "build:core": "node scripts/build-core.mjs",
     "build:ui": "cargo build --release --manifest-path native/livi-ui/Cargo.toml",
     "build:native": "node scripts/build-native.mjs",
     "build:native:arm64": "node scripts/build-native.mjs --arch=arm64",
     "build:native:x64": "node scripts/build-native.mjs --arch=x64",
-    "build": "pnpm run build:core && pnpm run build:ui",
-    "build:linux:arm64": "pnpm run build:native:arm64 && pnpm run build",
-    "build:linux:x64": "pnpm run build:native:x64 && pnpm run build",
-    "start": "LIVI_APP_PATH=\"$PWD\" node out/core/livi-core.cjs",
-    "start:ui": "LIVI_APP_PATH=\"$PWD\" native/livi-ui/target/release/livi-ui"
+    "build": "pnpm run build:native",
+    "start": "native/livi-helperd/build/Release/livi-core",
+    "start:headless": "LIVI_NO_UI=1 native/livi-helperd/build/Release/livi-core"
   },
   "lint-staged": {
     "*.{js,jsx,cjs,mjs,ts,tsx,cts,mts,json,jsonc,css,scss,md,yml,yaml}": "biome check --write --no-errors-on-unmatched",
     "*.rs": "rustfmt"
   },
-  "dependencies": {
-    "livi-crypto": "workspace:*",
-    "livi-gst-video": "workspace:*",
-    "protobufjs": "^8.8.0",
-    "socket.io": "^4.8.4"
-  },
   "devDependencies": {
     "@biomejs/biome": "^2.5.15",
-    "@types/node": "^26.6.4",
-    "electron": "^44.5.1",
-    "esbuild": "^0.28.2",
     "husky": "^9.1.7",
-    "lint-staged": "^17.6.0",
-    "typescript": "^7.0.2"
+    "lint-staged": "^17.6.0"
   }
 }

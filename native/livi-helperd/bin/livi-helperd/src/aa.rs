@@ -1,5 +1,3 @@
-// Android Auto wireless bootstrap over the AA RFCOMM channel.
-
 use std::os::fd::OwnedFd;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -28,7 +26,7 @@ pub struct AaConfig {
 async fn access_point(cfg: &AaConfig) -> (AaConfig, String) {
     let base = cfg.clone();
     tokio::task::spawn_blocking(move || {
-        use livi_dongle::{ap, link};
+        use livi_link_host::{ap, link};
         let dc = crate::linux_main::DeviceConfig::load();
         let iface = dc.string("wifiInterface", "LIVI_WIFI_IFACE", &base.wifi_iface);
         let passphrase = dc.string("wifiPassword", "LIVI_PASSPHRASE", &base.passphrase);
@@ -119,8 +117,8 @@ async fn handshake(
     let mut buf = [0u8; 4096];
     let mut pending: Option<(u16, Vec<u8>)> = None;
 
-    // The phone answers the version request first; a wired phone is dropped here so the
-    // USB session keeps the phone.
+    // The phone answers the version request first. A wired phone is dropped here so its USB
+    // session keeps it.
     if let Some((msg_id, body)) =
         read_frame(&mut sock, &mut reader, &mut buf, VERSION_TIMEOUT).await?
     {

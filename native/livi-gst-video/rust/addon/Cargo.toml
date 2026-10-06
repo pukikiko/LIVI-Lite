@@ -3,25 +3,17 @@ name = "gst-video-addon"
 version = "0.1.0"
 edition.workspace = true
 
-# N-API addon behind require('livi-gst-video'). The cdylib is copied to
-# native/livi-gst-video/build/Release/gst_video.node by scripts/build-native.mjs.
+# scripts/build-native.mjs copies the cdylib to native/livi-gst-video/build/Release/gst_video.node.
 [lib]
 crate-type = ["cdylib"]
 
 [dependencies]
-livi-audio-player = { path = "../audioplayer" }
-livi-audio-uplink = { path = "../mic" }
-livi-audio-stream = { path = "../audio" }
 livi-host-proto = { path = "../../../livi-host-proto/rust" }
-livi-video-fanout = { path = "../fanout" }
-livi-screen-stream = { path = "../screen" }
-livi-video-nal = { path = "../nal" }
-livi-video-player = { path = "../player" }
-socket2 = "0.6"
-napi = { version = "2", default-features = false, features = ["napi8"] }
-napi-derive = "2"
+livi-video-player = { path = "../player", features = ["window-view"] }
+napi = { version = "3.14", default-features = false, features = ["napi8"] }
+napi-derive = "3.6"
 
 [build-dependencies]
-cc = "1"
+cc = "1.6"
 pkg-config = "0.3"
-napi-build = "2"
+napi-build = "2.6"

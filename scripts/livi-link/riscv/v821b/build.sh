@@ -1,7 +1,4 @@
 #!/usr/bin/env bash
-# LIVI-Link V821B+AIC8800D80 dongle kernel on mainline: Image with the initramfs built in and our DTB,
-# wrapped into the boot image the vendor U-Boot loads from mtd1, plus the AIC8800 modules and livid for
-# the rootfs.
 # Order: build-userspace.sh, build.sh, ../../common/build-rootfs.sh <this dir>,
 # ../../common/pack-bundle.sh <this dir>.
 set -euo pipefail
@@ -36,8 +33,8 @@ log "make allnoconfig"
 cd "$KDIR"
 make ARCH=riscv allnoconfig >/dev/null
 
-# The console is the SBI one, OpenSBI owns uart0. clk_ignore_unused keeps its clock running, since no
-# Linux driver holds it. Output only: a UART that hears its own TX would feed every line back.
+# The console is SBI since OpenSBI owns uart0. clk_ignore_unused keeps its clock running, and
+# noinput stops a UART that hears its own TX from feeding every line back.
 log "layer the LIVI V821B config onto allnoconfig"
 ./scripts/config \
   --enable NONPORTABLE \
@@ -192,8 +189,7 @@ log "layer the LIVI V821B config onto allnoconfig"
 
 make ARCH=riscv CROSS_COMPILE="$CROSS_COMPILE" olddefconfig
 
-# allnoconfig plus a dependency that is not met drops a symbol without a word, so the ones this board
-# cannot run without are checked.
+# A symbol with an unmet dependency is dropped silently, so the ones this board needs are checked.
 for s in ARCH_RV32I ARCH_SUNXI_V821 ERRATA_ANDES ANDES_CACHE RISCV_DMA_NONCOHERENT RISCV_TIMER HVC_RISCV_SBI SUN300I_AWBASE \
          SUN300I_V821_CCU SUN300I_V821_AON_CCU PINCTRL_SUN300I_V821B \
          SPI_SUN300I_SPIF MTD_SPI_NOR MTD_OF_PARTS SQUASHFS MMC_SUNXI PHY_SUN4I_USB \
@@ -213,9 +209,9 @@ log "Image: $(stat -c%s "$IMG") B   DTB: $(stat -c%s "$DTB") B"
 aic8800_collect
 
 log "wrap kernel + DTB into the boot image for mtd1"
-HELPERD=$REPO/native/livi-helperd
-( cd "$HELPERD" && cargo build --release -p mkbootimg-v821b )
-"${CARGO_TARGET_DIR:-$HELPERD/target}/release/mkbootimg-v821b" "$IMG" "$DTB" "$BOOTIMG"
+LINK=$REPO/native/livi-link
+( cd "$LINK" && cargo build --release -p mkbootimg-v821b )
+"${CARGO_TARGET_DIR:-$LINK/target}/release/mkbootimg-v821b" "$IMG" "$DTB" "$BOOTIMG"
 log "done: $BOOTIMG"
 
 build_livid

@@ -1,5 +1,4 @@
-//! Files the app cannot write itself, put in place by this helper running as root. The app
-//! renders each file and hands its path over, so what lands is what the app would have shown.
+//! The app renders each file and hands its path over, so what lands is what it showed.
 
 use std::os::unix::fs::PermissionsExt;
 use std::process::{Command, Stdio};
@@ -12,7 +11,6 @@ fn read(src: &str) -> Result<Vec<u8>, String> {
     std::fs::read(src).map_err(|e| format!("{src}: {e}"))
 }
 
-/// Writes `content` to `path` with `mode`, creating the directory above it.
 pub fn write_root_file(path: &str, content: &[u8], mode: u32) -> Result<(), String> {
     require_root()?;
     if let Some(dir) = std::path::Path::new(path).parent() {
@@ -23,7 +21,6 @@ pub fn write_root_file(path: &str, content: &[u8], mode: u32) -> Result<(), Stri
         .map_err(|e| format!("{path}: {e}"))
 }
 
-/// A sudoers drop-in lands only after visudo accepted it.
 pub fn install_sudoers(file: &str, content: &[u8]) -> Result<(), String> {
     let staged = format!("{file}.livi-tmp");
     write_root_file(&staged, content, 0o440)?;
@@ -73,11 +70,29 @@ pub fn install_gvfs_guard(script_src: &str, rule_src: &str) -> Result<(), String
 
 const AP_UNIT: &str = "/etc/systemd/system/livi-wifi-ap.service";
 const AP_SUDOERS: &str = "/etc/sudoers.d/99-LIVI-wifi-ap";
+/// The unit runs root's own copy: systemd may start it under SELinux, and no
+/// user can swap the binary a root service runs.
+const AP_HELPER: &str = "/usr/local/sbin/livi-helperd";
 
 /// `--install-wifi-ap <unit> <rule>`
 pub fn install_wifi_ap(unit_src: &str, rule_src: &str) -> Result<(), String> {
     install_sudoers(AP_SUDOERS, &read(rule_src)?)?;
+    install_own_copy(AP_HELPER)?;
     write_root_file(AP_UNIT, &read(unit_src)?, 0o644)?;
     run("systemctl", &["daemon-reload"]);
     Ok(())
+}
+
+/// Swapped in whole, a service still running the old copy keeps it until its restart.
+fn install_own_copy(path: &str) -> Result<(), String> {
+    require_root()?;
+    let me = std::env::current_exe().map_err(|e| format!("own binary: {e}"))?;
+    let staged = format!("{path}.livi-tmp");
+    if let Some(dir) = std::path::Path::new(path).parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
+    std::fs::copy(&me, &staged).map_err(|e| format!("{staged}: {e}"))?;
+    std::fs::set_permissions(&staged, PermissionsExt::from_mode(0o755))
+        .map_err(|e| format!("{staged}: {e}"))?;
+    std::fs::rename(&staged, path).map_err(|e| format!("{path}: {e}"))
 }

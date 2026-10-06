@@ -1,17 +1,20 @@
-//! What the host reaches for when it runs for real: GStreamer pipelines and a
-//! listening socket for the phone's screen stream.
-
 use livi_audio_player::uplink::{SocketTap, Uplink, UplinkConfig as UplinkPipeline};
 use livi_audio_player::{Config as AudioPipeline, Player as AudioPipelinePlayer};
 use livi_audio_stream::AudioSink;
 use livi_screen_stream::ScreenSink;
+#[cfg(not(target_os = "macos"))]
 use livi_video_player::Player;
 
-use crate::{AudioConfig, MediaSink, Outside, Plane, Speaker, TapConfig, UplinkConfig};
+#[cfg(not(target_os = "macos"))]
+use crate::Plane;
+#[cfg(target_os = "macos")]
+use crate::ui_plane::UiPlane;
+use crate::{AudioConfig, MediaSink, Outside, Speaker, TapConfig, UplinkConfig};
 
-/// A running microphone tap, its samples go to the socket for as long as it is held.
+/// Captures for as long as it is held.
 pub struct Tap(#[allow(dead_code)] SocketTap);
 
+#[cfg(not(target_os = "macos"))]
 impl Plane for Player {
     fn start(&self) {
         Player::start(self)
@@ -30,26 +33,11 @@ impl Plane for Player {
     }
 }
 
-/// The socket one screen receiver listens on.
-#[cfg(target_os = "linux")]
 pub struct Ears(#[allow(dead_code)] livi_screen_stream::receiver::ScreenReceiver);
 
-#[cfg(not(target_os = "linux"))]
-pub struct Ears;
-
-/// The data and control sockets one audio stream is bound to.
-#[cfg(target_os = "linux")]
 pub struct AudioEars(#[allow(dead_code)] livi_audio_stream::receiver::AudioReceiver);
 
-#[cfg(not(target_os = "linux"))]
-pub struct AudioEars;
-
-/// The socket the helper's media feed listens on.
-#[cfg(target_os = "linux")]
 pub struct FeedEars(#[allow(dead_code)] crate::feed::FeedListener);
-
-#[cfg(not(target_os = "linux"))]
-pub struct FeedEars;
 
 impl Speaker for AudioPipelinePlayer {
     fn push_rtp(&self, rtp: &[u8]) {
@@ -76,7 +64,10 @@ impl Speaker for AudioPipelinePlayer {
 pub struct Gst;
 
 impl Outside for Gst {
+    #[cfg(not(target_os = "macos"))]
     type Plane = Player;
+    #[cfg(target_os = "macos")]
+    type Plane = UiPlane;
     type Ears = Ears;
     type Speaker = AudioPipelinePlayer;
     type AudioEars = AudioEars;
@@ -88,12 +79,21 @@ impl Outside for Gst {
             .map(Tap)
     }
 
-    fn create_plane(&self, codec: &str, codec_data: &[u8]) -> Option<Player> {
+    #[cfg(not(target_os = "macos"))]
+    fn create_plane(&self, _id: u32, codec: &str, codec_data: &[u8]) -> Option<Player> {
         // the window comes from the sink, so the player needs no handle
         Player::new(codec, 0, codec_data)
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(target_os = "macos")]
+    fn create_plane(&self, id: u32, codec: &str, codec_data: &[u8]) -> Option<UiPlane> {
+        let Ok(path) = std::env::var(livi_host_proto::ui_planes::PATH_ENV) else {
+            eprintln!("[gst-host] no UI to draw plane 0x{id:x} in");
+            return None;
+        };
+        UiPlane::open(&path, id, codec, codec_data)
+    }
+
     fn listen(&self, key: [u8; 32], sink: Box<dyn ScreenSink>) -> Option<(Ears, u16)> {
         match livi_screen_stream::receiver::ScreenReceiver::new(key, sink) {
             Ok((r, port)) => Some((Ears(r), port)),
@@ -102,11 +102,6 @@ impl Outside for Gst {
                 None
             }
         }
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    fn listen(&self, _key: [u8; 32], _sink: Box<dyn ScreenSink>) -> Option<(Ears, u16)> {
-        None
     }
 
     fn open_uplink(&self, cfg: UplinkConfig) -> Option<Uplink> {
@@ -142,7 +137,6 @@ impl Outside for Gst {
         Some(player)
     }
 
-    #[cfg(target_os = "linux")]
     fn listen_audio(
         &self,
         key: [u8; 32],
@@ -158,18 +152,8 @@ impl Outside for Gst {
         }
     }
 
-    #[cfg(not(target_os = "linux"))]
-    fn listen_audio(
-        &self,
-        _key: [u8; 32],
-        _sink: Box<dyn AudioSink + Send>,
-    ) -> Option<(AudioEars, u16, u16)> {
-        None
-    }
-
     type FeedEars = FeedEars;
 
-    #[cfg(target_os = "linux")]
     fn open_feed(&self, path: &str, sink: Box<dyn MediaSink>) -> Option<FeedEars> {
         match crate::feed::FeedListener::new(path, sink) {
             Ok(l) => Some(FeedEars(l)),
@@ -179,14 +163,8 @@ impl Outside for Gst {
             }
         }
     }
-
-    #[cfg(not(target_os = "linux"))]
-    fn open_feed(&self, _path: &str, _sink: Box<dyn MediaSink>) -> Option<FeedEars> {
-        None
-    }
 }
 
-/// The codec support the main process picks its decoders from.
 pub fn probe_json() -> String {
     livi_video_player::ensure_init();
     let mut out = String::from("{");

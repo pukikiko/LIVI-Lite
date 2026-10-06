@@ -1,5 +1,3 @@
-//! The GStreamer side of the video path.
-
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
@@ -8,9 +6,8 @@ use std::sync::Once;
 
 static INIT: Once = Once::new();
 
-/// Initialises GStreamer once, and turns on the debug categories named in
-/// `LIVI_GST_DEBUG`. The bare value `1` stands for the decoder and sink
-/// categories the video path is usually debugged with.
+/// `LIVI_GST_DEBUG=1` stands for the decoder and sink categories the video path is usually
+/// debugged with.
 pub fn ensure_init() {
     INIT.call_once(|| {
         if gst::init().is_err() {
@@ -27,8 +24,6 @@ pub fn ensure_init() {
     });
 }
 
-/// Prints errors and warnings the pipeline reports, and leaves the message on
-/// the bus for anyone else.
 pub fn log_bus_messages(pipeline: &gst::Pipeline) {
     let Some(bus) = pipeline.bus() else { return };
     bus.set_sync_handler(|_, msg| {
@@ -54,7 +49,7 @@ pub fn log_bus_messages(pipeline: &gst::Pipeline) {
     });
 }
 
-/// Takes every sink out of clock sync. The phone's stream is the clock.
+/// The phone's stream is the clock.
 pub fn force_sinks_realtime(pipeline: &gst::Pipeline) {
     for element in pipeline.iterate_recurse().into_iter().flatten() {
         if element.is::<gst_base::BaseSink>() {
@@ -69,7 +64,6 @@ pub fn force_sinks_realtime(pipeline: &gst::Pipeline) {
 const BAD_COLORIMETRY: &str = "1:4:5:1";
 const GOOD_COLORIMETRY: &str = "1:4:7:1";
 
-/// Decoders that need the colorimetry rewritten.
 const NEEDS_COLORIMETRY_FIXUP: [&str; 2] = ["v4l2h264dec", "v4l2h265dec"];
 
 const CAL_FRAGMENT: &str = "#version 100
@@ -95,7 +89,6 @@ fn colorimetry(caps: &gst::CapsRef) -> Option<String> {
     s.get::<String>("colorimetry").ok()
 }
 
-/// Logs the decoder's negotiated output caps once per caps change.
 fn log_decoded_caps(caps: &gst::CapsRef) {
     let Some(s) = caps.structure(0) else { return };
     let fmt = s.get::<String>("format").unwrap_or_else(|_| "?".to_owned());
@@ -110,8 +103,6 @@ fn log_decoded_caps(caps: &gst::CapsRef) {
     eprintln!("[gst_video] decoded format={fmt}{drm} {w}x{h} mem={mem}");
 }
 
-/// Installs the decoder probes: one logs the negotiated output caps, one pair
-/// rewrites the colorimetry the phone announces for the decoders that need it.
 fn install_decoder_probes(dec: &gst::Element, decoder_name: &str) {
     if let Some(src) = dec.static_pad("src") {
         src.add_probe(gst::PadProbeType::EVENT_DOWNSTREAM, |_, info| {
@@ -182,7 +173,7 @@ fn install_decoder_probes(dec: &gst::Element, decoder_name: &str) {
 }
 
 // The window view entry points in gst_video_mac.mm.
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "window-view"))]
 unsafe extern "C" {
     fn livi_attach_view(parent: usize, out_view: *mut *mut core::ffi::c_void) -> usize;
     fn livi_remove_view(view: *mut core::ffi::c_void);
@@ -199,23 +190,17 @@ unsafe extern "C" {
     );
 }
 
-/// One decoded stream: its pipeline, the source it is fed through, and the
-/// window view it draws into.
 pub struct Player {
     pipeline: gst::Pipeline,
     appsrc: Option<gst_app::AppSrc>,
     glshader: Option<gst::Element>,
-    /// macOS draws into a window of its own: the sink takes its handle, the
-    /// view carries position and visibility.
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", feature = "window-view"))]
     sink: Option<gst::Element>,
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", feature = "window-view"))]
     view: core::sync::atomic::AtomicPtr<core::ffi::c_void>,
 }
 
 impl Player {
-    /// Builds the pipeline for `codec` and hangs it in the window `handle`
-    /// names. None when no decoder is registered or the description fails.
     pub fn new(codec: &str, handle: usize, codec_data: &[u8]) -> Option<Self> {
         ensure_init();
 
@@ -243,9 +228,9 @@ impl Player {
 
         let mut player = Self {
             glshader: pipeline.by_name("cal"),
-            #[cfg(target_os = "macos")]
+            #[cfg(all(target_os = "macos", feature = "window-view"))]
             sink: pipeline.by_name("sink"),
-            #[cfg(target_os = "macos")]
+            #[cfg(all(target_os = "macos", feature = "window-view"))]
             view: core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
             appsrc,
             pipeline,
@@ -258,8 +243,7 @@ impl Player {
 
         force_sinks_realtime(&player.pipeline);
         if let Some(dec) = player.pipeline.by_name("dec") {
-            // avdec_h265 runs single-threaded on macOS (libavcodec 61 deadlocks in HEVC slice
-            // threading).
+            // libavcodec 61 deadlocks in HEVC slice threading on macOS.
             if cfg!(target_os = "macos") && decoder == "avdec_h265" {
                 dec.set_property_from_str("thread-type", "frame");
                 dec.set_property("max-threads", 1i32);
@@ -280,8 +264,6 @@ impl Player {
         Some(player)
     }
 
-    /// Parses the description, and drops the calibration pass when the platform
-    /// announces one the elements cannot deliver.
     fn parse(codec: &str, decoder: &str, with_cal: bool, handle: usize) -> Option<gst::Pipeline> {
         let describe = |cal: bool| {
             livi_video_codec::pipeline_desc(
@@ -316,10 +298,10 @@ impl Player {
         }
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(all(target_os = "macos", feature = "window-view")))]
     fn attach_view(&mut self, _handle: usize) {}
 
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", feature = "window-view"))]
     fn attach_view(&mut self, handle: usize) {
         use gstreamer_video::prelude::VideoOverlayExtManual;
         if handle == 0 {
@@ -347,7 +329,6 @@ impl Player {
         self.remove_view();
     }
 
-    /// Feeds one buffer. False when there is no source to take it.
     pub fn push(&self, data: &[u8]) -> bool {
         let Some(src) = &self.appsrc else { return false };
         if data.is_empty() {
@@ -357,11 +338,11 @@ impl Player {
     }
 
     pub fn set_visible(&self, visible: bool) {
-        #[cfg(target_os = "macos")]
+        #[cfg(all(target_os = "macos", feature = "window-view"))]
         unsafe {
             livi_set_view_hidden(self.view_ptr(), !visible)
         };
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(all(target_os = "macos", feature = "window-view")))]
         let _ = visible;
     }
 
@@ -375,7 +356,7 @@ impl Player {
         tier_w: f64,
         tier_h: f64,
     ) {
-        #[cfg(target_os = "macos")]
+        #[cfg(all(target_os = "macos", feature = "window-view"))]
         {
             let view = self.view_ptr();
             if view.is_null() {
@@ -389,18 +370,16 @@ impl Player {
                 livi_set_content_region(view, sink, crop_l, crop_t, vis_w, vis_h, tier_w, tier_h)
             }
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(all(target_os = "macos", feature = "window-view")))]
         let _ = (crop_l, crop_t, vis_w, vis_h, tier_w, tier_h);
     }
 
-    /// Drops everything queued, so the next frames play without the old tail.
     pub fn flush(&self) {
         let Some(src) = &self.appsrc else { return };
         let _ = src.send_event(gst::event::FlushStart::new());
         let _ = src.send_event(gst::event::FlushStop::new(true));
     }
 
-    /// Steers the calibration shader.
     pub fn set_gamma(&self, gamma: f64, contrast: f64, gain_r: f64, gain_g: f64, gain_b: f64) {
         let Some(shader) = &self.glshader else { return };
         let uniforms = gst::Structure::builder("uniforms")
@@ -413,14 +392,14 @@ impl Player {
         shader.set_property("uniforms", uniforms);
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", feature = "window-view"))]
     fn view_ptr(&self) -> *mut core::ffi::c_void {
         self.view.load(core::sync::atomic::Ordering::Acquire)
     }
 
     // The view is swapped out atomically, so a shared player can be stopped from any thread.
     fn remove_view(&self) {
-        #[cfg(target_os = "macos")]
+        #[cfg(all(target_os = "macos", feature = "window-view"))]
         {
             let view = self.view.swap(core::ptr::null_mut(), core::sync::atomic::Ordering::AcqRel);
             if !view.is_null() {
@@ -449,13 +428,12 @@ fn length_prefixed_caps(codec: &str, codec_data: &[u8]) -> gst::Caps {
         .build()
 }
 
-/// The GStreamer the pipeline runs on.
 pub fn version() -> String {
     ensure_init();
     gst::version_string().to_string()
 }
 
-/// The GPU livi-compositor renders on, from the node it hands its inner UI.
+/// livi-compositor hands its inner UI the node it renders on.
 fn render_gpu() -> Option<livi_video_codec::RenderGpu> {
     let node = std::env::var("LIVI_RENDER_NODE").ok()?;
     let name = std::path::Path::new(&node).file_name()?.to_str()?.to_owned();
@@ -497,7 +475,7 @@ fn usable(name: &str) -> bool {
         || dec.property::<Option<String>>("device-path").as_deref() == Some(node.as_str())
 }
 
-/// Whether a hardware and a software decoder are registered for `codec`.
+/// (hardware, software)
 pub fn probe(codec: &str) -> (bool, bool) {
     ensure_init();
     let exists = |name: &str| gst::ElementFactory::find(name).is_some();

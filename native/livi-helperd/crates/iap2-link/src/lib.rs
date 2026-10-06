@@ -1,5 +1,3 @@
-// iAP2 link layer as a sans-io engine: bytes and a clock in, writes and events out.
-
 use std::collections::VecDeque;
 
 pub const CONTROL_SESSION_ID: u8 = 10;
@@ -202,8 +200,6 @@ pub struct LinkEngine {
     rx_state: RxState,
     rx_buf: Vec<u8>,
     eof: bool,
-    skipped: usize,
-    dropped: usize,
 
     detect_deadline: Option<u64>,
     negotiate_deadline: Option<u64>,
@@ -245,8 +241,6 @@ impl LinkEngine {
             rx_state: RxState::Marker,
             rx_buf: Vec::new(),
             eof: false,
-            skipped: 0,
-            dropped: 0,
             detect_deadline: None,
             negotiate_deadline: None,
             send_ack_deadline: None,
@@ -258,10 +252,6 @@ impl LinkEngine {
 
     pub fn state(&self) -> LinkState {
         self.state
-    }
-
-    pub fn discarded(&self) -> (usize, usize) {
-        (self.skipped, self.dropped)
     }
 
     pub fn writable(&self) -> bool {
@@ -330,7 +320,6 @@ impl LinkEngine {
                         && u16::from_be_bytes([self.rx_buf[0], self.rx_buf[1]]) != LINK_START
                     {
                         self.rx_buf.remove(0);
-                        self.skipped += 1;
                     }
                     if self.rx_buf.len() < 9 {
                         return;
@@ -338,7 +327,6 @@ impl LinkEngine {
                     let header_bytes: [u8; 9] = self.rx_buf[..9].try_into().unwrap();
                     self.rx_buf.drain(..9);
                     let Some(header) = LinkPacketHeader::parse(&header_bytes) else {
-                        self.dropped += 1;
                         continue;
                     };
                     if header.length > 9 {
@@ -359,7 +347,6 @@ impl LinkEngine {
                     let payload_with_checksum: Vec<u8> = self.rx_buf.drain(..need).collect();
                     self.rx_state = RxState::Header;
                     if !check_checksum(&payload_with_checksum) {
-                        self.dropped += 1;
                         continue;
                     }
                     let payload = &payload_with_checksum[..payload_with_checksum.len() - 1];

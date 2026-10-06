@@ -1,7 +1,5 @@
-// HFP Hands-Free: SLC over RFCOMM so the phone treats the head unit as a car kit.
-
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 // Bit 2 CLI, bit 3 voice recognition, bit 4 remote volume. No codec negotiation:
 // the AG then defaults to CVSD and SCO carries raw PCM s16le 8kHz.
@@ -9,8 +7,11 @@ pub const HF_FEATURES: u32 = (1 << 2) | (1 << 3) | (1 << 4);
 
 const OK: &str = "\r\nOK\r";
 
-/// SLC engine: AG lines in, HF lines out. HF speaks first with AT+BRSF; the OK chain
-/// walks BRSF → (BAC) → CIND=? → CIND? → CMER, after which the SLC stands.
+fn debug() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var("DEBUG").is_ok_and(|v| v == "1"))
+}
+
 #[derive(Default)]
 pub struct Slc {
     ag_features: u32,
@@ -21,7 +22,7 @@ pub struct Slc {
     established: bool,
     post: Vec<&'static str>,
     indicators: Vec<String>,
-    /// battchg 0-5, updated by +CIND? and +CIEV.
+    /// 0 to 5.
     pub battchg: Option<u8>,
 }
 
@@ -40,7 +41,9 @@ impl Slc {
         if line.is_empty() {
             return vec![];
         }
-        println!("[hfp] << {line}");
+        if debug() {
+            println!("[hfp] << {line}");
+        }
 
         if let Some(v) = line.strip_prefix("+BRSF:") {
             self.ag_features = v.trim().parse().unwrap_or(self.ag_features);
@@ -73,8 +76,7 @@ impl Slc {
             if self.sent_cmer && !self.established {
                 self.established = true;
                 println!("[hfp] SLC established");
-                // Android drops a silent HF after ~12s; the post-SLC dialogue
-                // (same sequence PipeWire used) keeps the link alive.
+                // Android drops a silent HF after about 12 s, this dialogue keeps the link alive.
                 self.post = vec![
                     "AT+CLIP=1\r",
                     "AT+CCWA=1\r",
@@ -90,7 +92,7 @@ impl Slc {
         if let Some(v) = line.strip_prefix("+CIND:") {
             let v = v.trim();
             if v.starts_with('(') {
-                // Test response: ("call",(0,1)),... — capture the order.
+                // Test response ("call",(0,1)),... gives the indicator order.
                 self.indicators = v.split('"').skip(1).step_by(2).map(str::to_string).collect();
             } else {
                 // Read response: current values in the captured order.
@@ -153,14 +155,10 @@ impl Slc {
         if line == "RING" || line.starts_with("+CLIP:") {
             return vec![];
         }
-        // Everything else the phone asks gets acknowledged: AT+CMER=, AT+BIND=, AT+BAC=,
-        // ATA, AT+CHUP, ATD…, AT+BVRA=, AT+VGS=, AT+VGM=, AT+NREC=, AT+BTRH?, AT+CLIP=,
-        // AT+CCWA=, AT+CMEE=, AT+CLCC, AT+CNUM, unknown.
         vec![OK.into()]
     }
 }
 
-/// The hands-free side of HFP: runs the service-level connection the phone opens and reports it.
 #[derive(Clone, Default)]
 pub struct Hfp {
     inner: Arc<HfpInner>,
@@ -178,12 +176,10 @@ impl Hfp {
         self.inner.established.load(Ordering::SeqCst)
     }
 
-    /// Event sink for SLC state and battery updates.
     pub fn set_events(&self, events: crate::livi_sock::Broadcaster) {
         *self.inner.events.lock().unwrap() = Some(events);
     }
 
-    /// Incoming Profile1 connection: the AG connected to us, run the SLC on its fd.
     #[cfg(target_os = "linux")]
     pub fn accept(&self, fd: std::os::fd::OwnedFd, mac: String) {
         let inner = self.inner.clone();
@@ -200,8 +196,7 @@ mod linux {
 
     const AT_TIMEOUT: Duration = Duration::from_secs(300);
 
-    /// Blocking AT loop until the peer hangs up. AT_TIMEOUT applies only while the SLC
-    /// is still negotiating. An established SLC is silent by design.
+    /// AT_TIMEOUT applies only while the SLC is negotiating, an established one may stay silent.
     pub fn slc_loop(inner: &HfpInner, fd: OwnedFd, initial: Vec<u8>, send_hello: bool, mac: &str) {
         let mut slc = Slc::default();
         if send_hello && write_all(&fd, Slc::hello().as_bytes()).is_err() {
@@ -311,7 +306,6 @@ mod tests {
         let mut slc = Slc::default();
         assert_eq!(Slc::hello(), format!("AT+BRSF={HF_FEATURES}\r"));
         assert!(drive(&mut slc, "+BRSF:4095").is_empty());
-        // No codec negotiation offered — straight to the indicator dance.
         assert_eq!(drive(&mut slc, "OK"), vec!["AT+CIND=?\r"]);
         assert!(drive(&mut slc, "+CIND: (\"call\",(0,1)),(\"battchg\",(0-5))").is_empty());
         assert_eq!(drive(&mut slc, "OK"), vec!["AT+CIND?\r"]);

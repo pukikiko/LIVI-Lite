@@ -36,7 +36,7 @@ grep -q 'CONFIG_ARCH_AXERA' "$KDIR/arch/arm/Makefile" || \
 grep -q 'CONFIG_ARCH_AXERA' "$KDIR/arch/arm/Makefile" || { log "could not hook mach-axera into arch/arm/Makefile"; exit 3; }
 
 shopt -s nullglob
-log "apply kernel patches (fotg210 udc: second interrupt line, pullup, polarity, IRQs before bind, status bits that clear; dw spi: wait for the last frame; spidev for the LED)"
+log "apply kernel patches (fotg210 udc: second interrupt line, pullup, polarity, IRQs before bind, status bits that clear, padding instead of zero length packets; dw spi: wait for the last frame; spidev for the LED)"
 apply_patches "$HERE/kernel-patches" "$KDIR"
 
 log "install LIVI-Link AX520 DTS"

@@ -3,10 +3,9 @@
 #import <QuartzCore/QuartzCore.h>
 #include <math.h>
 
-// Clip view: sized to the content rectangle
 @interface LIVIClipView : NSView {
 @public
-  NSView* _gl;  // the GL sink's render target (child view)
+  NSView* _gl;
   double _cropL, _cropT, _visW, _visH, _tierW, _tierH;  // content region in tier px
 @private
   BOOL _relayoutPending;
@@ -29,14 +28,12 @@
   const double wh = sv.bounds.size.height;
   if (ww <= 0 || wh <= 0) return;
 
-  // No content region yet: fill the window, child fills the clip view.
   if (_visW <= 0 || _visH <= 0 || _tierW <= 0 || _tierH <= 0) {
     [self setFrame:sv.bounds];
     [_gl setFrame:self.bounds];
     return;
   }
 
-  // Contain the content AR into the window; the clip view IS that content rect.
   const double scale = fmin(ww / _visW, wh / _visH);
   const double cdw = _visW * scale;
   const double cdh = _visH * scale;
@@ -47,7 +44,6 @@
 
 - (void)superviewResized:(NSNotification*)note {
   (void)note;
-  // While the window is in an interactive live resize the plane is hidden
   if (_inLiveResize) return;
   if (_relayoutPending) return;
   _relayoutPending = YES;
@@ -57,7 +53,6 @@
   });
 }
 
-// Logical visibility (cluster shown/hidden)
 - (void)setUserHidden:(BOOL)hidden {
   _userHidden = hidden;
   if (!_inLiveResize) [self setHidden:hidden];
@@ -95,14 +90,12 @@ extern "C" guintptr livi_attach_view(guintptr parent, void** outView) {
   [clip addSubview:gl];
   clip->_gl = gl;
 
-  // Re-lay-out whenever the window (content view) resizes.
   [p setPostsFrameChangedNotifications:YES];
   [[NSNotificationCenter defaultCenter] addObserver:clip
                                            selector:@selector(superviewResized:)
                                                name:NSViewFrameDidChangeNotification
                                              object:p];
 
-  // Suspend the plane during an interactive window drag-resize
   NSWindow* win = [p window];
   if (win) {
     NSNotificationCenter* nc = [NSNotificationCenter defaultCenter];
@@ -116,11 +109,10 @@ extern "C" guintptr livi_attach_view(guintptr parent, void** outView) {
              object:win];
   }
 
-  *outView = (void*)clip;       // tracked view
+  *outView = (void*)clip;
   return (guintptr)(void*)gl;   // the GL sink renders into the child
 }
 
-// Set the content region (crop) and re-lay-out
 extern "C" void livi_set_content_region(void* view, void* sink, double cropL,
     double cropT, double visW, double visH, double tierW, double tierH) {
   (void)sink;
@@ -159,4 +151,13 @@ extern "C" void livi_set_backdrop(guintptr parent, double r, double g, double b)
   if (!p.layer) return;
   NSColor* col = [NSColor colorWithSRGBRed:r green:g blue:b alpha:1.0];
   p.layer.backgroundColor = col.CGColor;
+}
+
+// The planes arrive on threads of their own, views are touched on the main thread.
+extern "C" void livi_run_on_main(void (*work)(void*), void* context) {
+  if ([NSThread isMainThread]) {
+    work(context);
+    return;
+  }
+  dispatch_sync_f(dispatch_get_main_queue(), context, work);
 }

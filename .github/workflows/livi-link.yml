@@ -36,7 +36,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Setup Rust
-        run: rustup toolchain install stable --profile minimal && rustup default stable
+        run: rustup toolchain install
 
       - name: Cache cargo
         uses: actions/cache@v5
@@ -45,14 +45,17 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             native/livi-helperd/target
-          key: cargo-shared-${{ hashFiles('native/livi-helperd/**/Cargo.toml') }}
+            native/livi-link/target
+          key: cargo-shared-${{ hashFiles('native/livi-helperd/Cargo.lock', 'native/livi-link/Cargo.lock', 'native/livi-helperd/**/Cargo.toml', 'native/livi-link/**/Cargo.toml') }}
           restore-keys: cargo-shared-
 
       - name: cargo test shared crates
         working-directory: native/livi-helperd
-        run: |
-          cargo test --release \
-            -p iap2-mfi -p livi-wifi -p livi-btd -p livi-iapd -p livi-mdns
+        run: cargo test --release -p iap2-mfi -p livi-wifi
+
+      - name: cargo test dongle crates
+        working-directory: native/livi-link
+        run: cargo test --release -p livi-btd -p livi-iapd -p livi-mdns -p livi-wifid
 
   bundle-sanity:
     name: pack .lfwb bundle (dummy inputs)
@@ -148,8 +151,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+          curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          "$HOME/.cargo/bin/rustup" toolchain install
           "$HOME/.cargo/bin/rustc" --version
 
       - name: Install Andes riscv32 cross toolchain
@@ -194,8 +198,8 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            native/livi-helperd/target
-          key: cargo-livi-link-riscv32-${{ hashFiles('native/livi-helperd/**/Cargo.toml') }}
+            native/livi-link/target
+          key: cargo-livi-link-riscv32-${{ hashFiles('native/livi-link/Cargo.lock', 'native/livi-helperd/Cargo.lock', 'native/livi-link/**/Cargo.toml', 'native/livi-helperd/**/Cargo.toml') }}
           restore-keys: cargo-livi-link-riscv32-
 
       - name: Build v821b firmware bundle
@@ -218,7 +222,6 @@ jobs:
           source scripts/livi-link/version.sh
           livi_firmware_json "assets/livi-link/${{ matrix.target }}/$(basename "$BUNDLE")"
 
-      # Every armv7 board builds the same way, only its directory under scripts/livi-link/arm differs.
       - name: Install arm-linux-gnueabihf cross toolchain (armv7)
         if: matrix.target == 'ax520_aic8800d80' || startsWith(matrix.target, 'imx6ul_')
         shell: bash
@@ -237,8 +240,8 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            native/livi-helperd/target
-          key: cargo-livi-link-${{ matrix.target }}-${{ hashFiles('native/livi-helperd/**/Cargo.toml') }}
+            native/livi-link/target
+          key: cargo-livi-link-${{ matrix.target }}-${{ hashFiles('native/livi-link/Cargo.lock', 'native/livi-helperd/Cargo.lock', 'native/livi-link/**/Cargo.toml', 'native/livi-helperd/**/Cargo.toml') }}
           restore-keys: cargo-livi-link-${{ matrix.target }}-
 
       - name: Build armv7 firmware bundle
@@ -251,7 +254,6 @@ jobs:
           CROSS_COMPILE: arm-linux-gnueabihf-
         run: |
           set -euo pipefail
-          # An i.MX6UL target names the Wi-Fi/Bluetooth module its build is for.
           if [[ $TARGET == imx6ul_* ]]; then export RADIO=${TARGET#imx6ul_}; fi
           mkdir -p "$TOP"
           bash scripts/livi-link/arm/build-userspace.sh "$BOARD_DIR"
@@ -329,8 +331,6 @@ jobs:
             exit 0
           fi
 
-          # The target dirs that changed in this run, names only, comma-separated
-          # (e.g. "imx6ul_iw416, v821b_aic8800d80"), read from the staged diff.
           details="$(git diff --cached --name-only -- assets/livi-link \
             | sed -n 's#^assets/livi-link/\([^/]*\)/.*#\1#p' | sort -u \
             | paste -sd, - | sed 's/,/, /g')"
@@ -404,8 +404,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          rustup toolchain install stable --profile minimal
-          rustup default stable
+          rustup toolchain install
           rustc --version
 
       - name: Cache cargo
@@ -414,18 +413,18 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            native/livi-helperd/target
-          key: cargo-livi-link-tool-${{ matrix.name }}-${{ hashFiles('native/livi-helperd/**/Cargo.toml') }}
+            native/livi-link/target
+          key: cargo-livi-link-tool-${{ matrix.name }}-${{ hashFiles('native/livi-link/Cargo.lock', 'native/livi-helperd/Cargo.lock', 'native/livi-link/**/Cargo.toml', 'native/livi-helperd/**/Cargo.toml') }}
           restore-keys: cargo-livi-link-tool-${{ matrix.name }}-
 
       - name: Build
-        working-directory: native/livi-helperd
+        working-directory: native/livi-link
         run: |
           LIVI_VERSION="$(node -p "require('../../package.json').version")" \
             cargo build --release -p livi-link-provision-cli
 
       - name: Name the binary per platform
-        working-directory: native/livi-helperd/target/release
+        working-directory: native/livi-link/target/release
         shell: bash
         run: mv livi-link-provision livi-link-provision-${{ matrix.name }}
 
@@ -433,5 +432,5 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: livi-link-provision-${{ matrix.name }}
-          path: native/livi-helperd/target/release/livi-link-provision-${{ matrix.name }}
+          path: native/livi-link/target/release/livi-link-provision-${{ matrix.name }}
           retention-days: 30

@@ -7,4 +7,4 @@ edition.workspace = true
 livi-net = { path = "../livi-net" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-libc = "0.2"
+libc.workspace = true

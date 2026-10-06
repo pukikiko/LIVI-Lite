@@ -15,6 +15,7 @@
       "vitest.main.setup.ts",
       "!src/renderer/out/**",
       "!src/main/services/time/vendor/**",
+      "!src/main/shared/core/contract.ts",
       "!coverage/**",
       "!dist/**",
       "!out/**",

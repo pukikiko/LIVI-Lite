@@ -3,15 +3,17 @@ name = "livi-video-player"
 version = "0.1.0"
 edition.workspace = true
 
-# The GStreamer side of the video path. The feature follows the oldest build
-# host: the CI runner carries 1.24, the Pi 1.26, and the shipped runtime 1.28.
-# Older at build time than at run time is the safe direction.
 [lib]
 crate-type = ["rlib"]
 
+# v1_24 matches the oldest build host, the CI runner.
 [dependencies]
 gstreamer = { version = "0.24", features = ["v1_24"] }
 gstreamer-app = { version = "0.24", features = ["v1_24"] }
 gstreamer-base = { version = "0.24", features = ["v1_24"] }
-gstreamer-video = { version = "0.24", features = ["v1_24"] }
+gstreamer-video = { version = "0.24", features = ["v1_24"], optional = true }
 livi-video-codec = { path = "../codec" }
+
+[features]
+# Needs gst_video_mac.mm, which only the addon compiles in.
+window-view = ["dep:gstreamer-video"]

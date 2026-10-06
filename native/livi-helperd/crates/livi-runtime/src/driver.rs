@@ -14,43 +14,6 @@ use crate::file_transfer::{FileTransferReceiver, FtOutput};
 use crate::framing::FrameReader;
 use crate::{ChannelError, ControlChannel};
 
-const PHONE_QUIET: Duration = Duration::from_secs(5);
-const TRACE_CHUNKS: usize = 20;
-const TRACE_BYTES: usize = 32;
-
-/// The first chunks of a wired link in both directions, as LIVI.log shows them.
-#[derive(Default)]
-struct Trace {
-    bytes_in: usize,
-    bytes_out: usize,
-    chunks_in: usize,
-    chunks_out: usize,
-}
-
-impl Trace {
-    fn inbound(&mut self, data: &[u8], now: u64) {
-        self.bytes_in += data.len();
-        self.chunks_in += 1;
-        if self.chunks_in <= TRACE_CHUNKS {
-            println!("[link] in  {now} ms: {} bytes {}", data.len(), hex(data));
-        }
-    }
-
-    fn out(&mut self, data: &[u8], now: u64) {
-        self.bytes_out += data.len();
-        self.chunks_out += 1;
-        if self.chunks_out <= TRACE_CHUNKS {
-            println!("[link] out {now} ms: {} bytes {}", data.len(), hex(data));
-        }
-    }
-}
-
-fn hex(data: &[u8]) -> String {
-    let shown: Vec<String> = data.iter().take(TRACE_BYTES).map(|b| format!("{b:02x}")).collect();
-    let more = if data.len() > TRACE_BYTES { " …" } else { "" };
-    format!("{}{more}", shown.join(" "))
-}
-
 pub struct LinkChannel {
     out_tx: mpsc::UnboundedSender<Vec<u8>>,
     in_rx: mpsc::UnboundedReceiver<Vec<u8>>,
@@ -65,7 +28,6 @@ impl ControlChannel for LinkChannel {
     }
 }
 
-/// Completed file-transfer payloads (album artwork) the phone pushed over the link.
 pub type ArtworkRx = mpsc::UnboundedReceiver<Vec<u8>>;
 
 pub fn spawn_link(
@@ -146,9 +108,6 @@ async fn pump(
     }
 }
 
-/// Moves engine events out to the session: control frames get reassembled into CSM frames,
-/// file transfers are acknowledged and completed artwork forwarded. Returns false when the
-/// link is finished.
 fn drain_events(
     engine: &mut LinkEngine,
     reader: &mut FrameReader,
@@ -197,8 +156,7 @@ fn drain_events(
     engine.state() != LinkState::Dead
 }
 
-/// Drives the link over any byte stream (the wired carkit TLS channel), splitting it so
-/// reads never block outgoing ACKs.
+/// Split, so reads never block outgoing ACKs.
 pub fn spawn_link_stream<S>(
     stream: S,
     cfg: LinkConfig,
@@ -259,17 +217,11 @@ where
     let mut reader = FrameReader::default();
     let mut ft = FileTransferReceiver::default();
     let mut pending = engine.take_output();
-    // What a cable session that never identifies needs to show: what went out, what came back.
-    let mut trace = Trace::default();
     let mut state = engine.state();
-    let summary = tokio::time::sleep(PHONE_QUIET);
-    tokio::pin!(summary);
-    let mut summed = false;
 
     loop {
         if !pending.is_empty() {
             let out = std::mem::take(&mut pending);
-            trace.out(&out, now());
             wr.write_all(&out).await?;
             wr.flush().await?;
         }
@@ -281,28 +233,13 @@ where
 
         tokio::select! {
             data = rx_rx.recv() => match data {
-                Some(data) => {
-                    trace.inbound(&data, now());
-                    engine.feed(&data, now())
-                }
+                Some(data) => engine.feed(&data, now()),
                 None => engine.feed_eof(),
             },
             frame = out_rx.recv() => match frame {
                 Some(frame) => engine.send(CONTROL_SESSION_ID, frame, now()),
                 None => return Ok(()),
             },
-            _ = &mut summary, if !summed => {
-                summed = true;
-                let (skipped, dropped) = engine.discarded();
-                println!(
-                    "[link] after {} s: {} bytes in, {} out, {skipped} skipped, {dropped} frames \
-                     dropped, {:?}",
-                    PHONE_QUIET.as_secs(),
-                    trace.bytes_in,
-                    trace.bytes_out,
-                    engine.state()
-                );
-            }
             _ = tokio::time::sleep(sleep) => {}
         }
 
@@ -338,30 +275,4 @@ fn read_fd(fd: RawFd, buf: &mut [u8]) -> io::Result<usize> {
 fn write_fd(fd: RawFd, buf: &[u8]) -> io::Result<usize> {
     let n = unsafe { libc::write(fd, buf.as_ptr() as *const libc::c_void, buf.len()) };
     if n < 0 { Err(io::Error::last_os_error()) } else { Ok(n as usize) }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_traced_chunk_shows_its_first_bytes_and_marks_the_rest() {
-        assert_eq!(hex(&[0xff, 0x55, 0x02]), "ff 55 02");
-        let long = vec![0xab; TRACE_BYTES + 1];
-        assert!(hex(&long).ends_with("ab …"));
-        assert_eq!(hex(&long).matches("ab").count(), TRACE_BYTES);
-    }
-
-    #[test]
-    fn the_trace_counts_every_byte_but_logs_only_the_first_chunks() {
-        let mut trace = Trace::default();
-        for _ in 0..TRACE_CHUNKS + 5 {
-            trace.inbound(&[1, 2, 3], 0);
-            trace.out(&[4, 5], 0);
-        }
-        assert_eq!(
-            (trace.bytes_in, trace.bytes_out),
-            (3 * (TRACE_CHUNKS + 5), 2 * (TRACE_CHUNKS + 5))
-        );
-    }
 }

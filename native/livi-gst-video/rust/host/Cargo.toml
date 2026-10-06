@@ -3,7 +3,6 @@ name = "gst-video-host"
 version = "0.1.0"
 edition.workspace = true
 
-# The standalone livi-gst-host binary the main process spawns on Linux.
 [[bin]]
 name = "livi-gst-host"
 path = "src/main.rs"
@@ -17,7 +16,6 @@ livi-screen-stream = { path = "../screen" }
 livi-video-fanout = { path = "../fanout" }
 livi-video-nal = { path = "../nal" }
 livi-video-player = { path = "../player" }
-
-[target.'cfg(target_os = "linux")'.dependencies]
+realfft = "3.5.0"
 glib = "0.21"
-libc = "0.2"
+libc.workspace = true

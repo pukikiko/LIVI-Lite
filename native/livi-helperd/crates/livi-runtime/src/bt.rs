@@ -228,8 +228,7 @@ pub async fn start(
     Ok((conn, rx))
 }
 
-/// BlueZ publishes an adapter a moment after the kernel registers it, and a tunnelled controller
-/// takes longer than a local one, so give it that moment before setting anything on it.
+/// A tunnelled controller shows up in BlueZ late.
 async fn wait_for_adapter(conn: &Connection, path: &str) -> Result<(), Box<dyn Error>> {
     let deadline = std::time::Instant::now() + ADAPTER_WAIT;
     loop {
@@ -252,8 +251,7 @@ async fn wait_for_adapter(conn: &Connection, path: &str) -> Result<(), Box<dyn E
     }
 }
 
-/// BlueZ answers Busy while it is still settling an adapter it has only just published, so the
-/// same set is offered again until it takes.
+/// BlueZ answers Busy on an adapter it has only just published.
 async fn set_prop(
     conn: &Connection,
     path: &str,
@@ -297,13 +295,10 @@ async fn trust(conn: &Connection, device: &str) {
     }
 }
 
-/// Whether BlueZ turned the call down because it is in the middle of something else.
 fn busy(e: &zbus::Error) -> bool {
     matches!(e, zbus::Error::MethodError(name, _, _) if name.as_str() == "org.bluez.Error.Busy")
 }
 
-/// Publishes the Android Auto wireless profile so a phone can open the RFCOMM channel that
-/// carries the Wi-Fi bootstrap.
 pub async fn start_aa(
     conn: &Connection,
     adapter: &str,
@@ -352,8 +347,7 @@ impl HfpProfile {
     fn release(&self) {}
 }
 
-/// The audio daemon usually holds HFP HF (incl. SCO); ours registers only as fallback,
-/// and calls go through the daemon's — a second SLC just makes the phone drop one.
+/// The audio daemon usually holds HF already, and a second SLC makes the phone drop one.
 pub async fn start_hfp(
     conn: &Connection,
     adapter: &str,
@@ -398,7 +392,7 @@ impl BleAd {
     }
 }
 
-/// BLE advertisement with the AA UUID, so phones find the head unit without a BR/EDR scan.
+/// Lets phones find the head unit without a BR/EDR scan.
 pub async fn start_ble_ad(
     conn: &Connection,
     adapter: &str,
@@ -457,13 +451,13 @@ impl MprisRoot {
     }
 }
 
-/// AVRCP passthrough lands here via BlueZ; every key becomes an input event for LIVI.
+/// BlueZ hands AVRCP passthrough keys to this player.
 pub struct MprisPlayer {
     events: crate::livi_sock::Broadcaster,
     status: std::sync::Arc<std::sync::Mutex<String>>,
 }
 
-/// Updates the player's PlaybackStatus, so the peer's play/pause toggle sends the right verb.
+/// The peer's play/pause toggle picks its verb from PlaybackStatus.
 #[derive(Clone)]
 pub struct MediaPlayerHandle {
     conn: Connection,
@@ -482,7 +476,7 @@ impl MediaPlayerHandle {
         println!("[aa] avrcp playback status -> {status}");
         if let Ok(iface) = self.conn.object_server().interface::<_, MprisPlayer>(PLAYER_PATH).await
         {
-            let _ = iface.get().await.playback_status_changed(iface.signal_context()).await;
+            let _ = iface.get().await.playback_status_changed(iface.signal_emitter()).await;
         }
     }
 }
@@ -633,7 +627,7 @@ pub async fn start_media_player(
     Ok(MediaPlayerHandle { conn: conn.clone(), status })
 }
 
-/// Stops advertising, so phones no longer try to reach a head unit that is gone.
+/// Turned off so phones stop trying to reach a head unit that is gone.
 pub async fn set_discoverable(conn: &Connection, adapter: &str, on: bool) {
     let path = format!("/org/bluez/{adapter}");
     for prop in ["Discoverable", "Pairable"] {
@@ -673,7 +667,6 @@ pub fn drop_link(conn: &Connection, adapter: &str, mac: String) {
     });
 }
 
-/// For a session over BlueZ: a phone whose iAP2 runs over the cable by now gets no start there.
 pub fn on_cable(
     state: std::sync::Arc<crate::state::HelperState>,
     conn: &Connection,

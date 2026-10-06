@@ -1,21 +1,13 @@
 #![cfg_attr(not(target_os = "linux"), allow(dead_code))]
 
-//! nl80211 channel-listing (`listing`, `ap_state`, `regulatory_country`)
-//! plus a shared wifid server for the LIVI dongles (see [`server`]).
+//! Shared by the host and the LIVI Link's wifid.
 
-#[cfg(target_os = "linux")]
-pub mod hostapd;
-pub mod radio;
-#[cfg(target_os = "linux")]
-pub mod server;
-
-/// The stub for a host without nl80211.
 #[cfg(not(target_os = "linux"))]
 pub fn listing() -> Result<String, String> {
     Err("the channel list needs linux".into())
 }
 
-/// What an interface beacons: its network, channel and width in MHz.
+/// `width` in MHz.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApState {
     pub ssid: String,
@@ -23,28 +15,27 @@ pub struct ApState {
     pub width: u32,
 }
 
-/// The stub for a host without nl80211.
 #[cfg(not(target_os = "linux"))]
 pub fn ap_state(_iface: &str) -> Option<ApState> {
     None
 }
 
-/// The stub for a host without nl80211.
 #[cfg(not(target_os = "linux"))]
 pub fn regulatory_country() -> Option<String> {
     None
 }
 
-/// The stub for a host without nl80211.
-#[cfg(not(target_os = "linux"))]
-pub fn station_rates(_iface: &str) -> Option<(u32, u32)> {
-    None
+/// `rates` in Mbps as (down, up) of the first station that reports any. Down is what the
+/// phone sends us (station RX), up what we send it (station TX).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Stations {
+    pub count: usize,
+    pub rates: Option<(u32, u32)>,
 }
 
-/// The stub for a host without nl80211.
 #[cfg(not(target_os = "linux"))]
-pub fn station_count(_iface: &str) -> usize {
-    0
+pub fn stations(_iface: &str) -> Stations {
+    Stations::default()
 }
 
 #[cfg(target_os = "linux")]
@@ -65,7 +56,7 @@ const NL80211_CMD_GET_INTERFACE: u8 = 5;
 const NL80211_CMD_GET_STATION: u8 = 17;
 const ATTR_IFINDEX: u16 = 3;
 const ATTR_IFNAME: u16 = 4;
-// STA_INFO holds the nested per-station stats; TX/RX_BITRATE are themselves nested RATE_INFO.
+// STA_INFO nests the per-station stats, TX/RX_BITRATE each nest a RATE_INFO.
 const ATTR_STA_INFO: u16 = 21;
 const STA_INFO_TX_BITRATE: u16 = 8;
 const STA_INFO_RX_BITRATE: u16 = 14;
@@ -112,8 +103,6 @@ pub fn run() -> ExitCode {
     }
 }
 
-/// The regulatory country and every channel the radio knows, one per line, with the flags the
-/// kernel put on it.
 #[cfg(target_os = "linux")]
 pub fn listing() -> Result<String, String> {
     let fd = open()?;
@@ -154,7 +143,6 @@ fn open() -> Result<OwnedFd, String> {
     if bound < 0 {
         return Err(format!("netlink bind: {}", std::io::Error::last_os_error()));
     }
-    // Receive timeout.
     let timeout = libc::timeval { tv_sec: 3, tv_usec: 0 };
     unsafe {
         libc::setsockopt(
@@ -182,8 +170,6 @@ fn family_id(fd: &OwnedFd) -> Result<u16, String> {
     Err("nl80211 is not registered with generic netlink".into())
 }
 
-/// What an interface beacons right now, None until it is an access point with a network
-/// up. Read from the kernel, so it holds what is on air rather than what a config asked for.
 #[cfg(target_os = "linux")]
 pub fn ap_state(iface: &str) -> Option<ApState> {
     let fd = open().ok()?;
@@ -226,48 +212,59 @@ fn width_mhz(raw: u32) -> u32 {
     }
 }
 
-/// The connected station's negotiated PHY bitrate in Mbps, as (down, up) from the car's point
-/// of view: down is what the phone sends us (station RX), up is what we send it (station TX).
-/// None until a phone is associated. There is one station on the CarPlay AP.
+/// The AIC8800 driver asks its firmware about every station.
 #[cfg(target_os = "linux")]
-pub fn station_rates(iface: &str) -> Option<(u32, u32)> {
-    let name = std::ffi::CString::new(iface).ok()?;
+pub fn stations(iface: &str) -> Stations {
+    let Ok(name) = std::ffi::CString::new(iface) else {
+        return Stations::default();
+    };
     let index = unsafe { libc::if_nametoindex(name.as_ptr()) };
     if index == 0 {
-        return None;
+        return Stations::default();
     }
-    let fd = open().ok()?;
-    let family = family_id(&fd).ok()?;
-    let request = message(
-        family,
-        NL80211_CMD_GET_STATION,
-        NLM_F_DUMP,
-        &attr(ATTR_IFINDEX, &index.to_ne_bytes()),
-    );
-    for payload in call(&fd, &request).ok()? {
-        for (kind, info) in Attrs(&payload[..]) {
-            if kind != ATTR_STA_INFO {
-                continue;
-            }
-            let mut down = None;
-            let mut up = None;
-            for (what, rate) in Attrs(info) {
-                match what {
-                    STA_INFO_RX_BITRATE => down = rate_mbps(rate),
-                    STA_INFO_TX_BITRATE => up = rate_mbps(rate),
-                    _ => {}
-                }
-            }
-            if down.is_some() || up.is_some() {
-                return Some((down.unwrap_or(0), up.unwrap_or(0)));
-            }
-        }
-    }
-    None
+    let request = |family| {
+        message(
+            family,
+            NL80211_CMD_GET_STATION,
+            NLM_F_DUMP,
+            &attr(ATTR_IFINDEX, &index.to_ne_bytes()),
+        )
+    };
+    open()
+        .and_then(|fd| call(&fd, &request(family_id(&fd)?)))
+        .map(|payloads| stations_in(&payloads))
+        .unwrap_or_default()
 }
 
-/// One nested RATE_INFO attribute set to Mbps. Prefers the 32-bit rate; both are 100 kbps units.
-#[cfg(target_os = "linux")]
+fn stations_in(payloads: &[Vec<u8>]) -> Stations {
+    let mut found = Stations::default();
+    for payload in payloads {
+        // One answer per station, each with a nested STA_INFO.
+        let Some(info) =
+            Attrs(&payload[..]).find_map(|(kind, info)| (kind == ATTR_STA_INFO).then_some(info))
+        else {
+            continue;
+        };
+        found.count += 1;
+        found.rates = found.rates.or_else(|| rates_of(info));
+    }
+    found
+}
+
+fn rates_of(info: &[u8]) -> Option<(u32, u32)> {
+    let mut down = None;
+    let mut up = None;
+    for (what, rate) in Attrs(info) {
+        match what {
+            STA_INFO_RX_BITRATE => down = rate_mbps(rate),
+            STA_INFO_TX_BITRATE => up = rate_mbps(rate),
+            _ => {}
+        }
+    }
+    (down.is_some() || up.is_some()).then(|| (down.unwrap_or(0), up.unwrap_or(0)))
+}
+
+/// Prefers the 32-bit rate, both are in 100 kbps.
 fn rate_mbps(attrs: &[u8]) -> Option<u32> {
     let mut wide = None;
     let mut narrow = None;
@@ -285,36 +282,6 @@ fn rate_mbps(attrs: &[u8]) -> Option<u32> {
     Some(wide.or(narrow)? / 10)
 }
 
-/// How many stations are associated to the AP.
-#[cfg(target_os = "linux")]
-pub fn station_count(iface: &str) -> usize {
-    let Ok(name) = std::ffi::CString::new(iface) else {
-        return 0;
-    };
-    let index = unsafe { libc::if_nametoindex(name.as_ptr()) };
-    if index == 0 {
-        return 0;
-    }
-    let Ok(fd) = open() else {
-        return 0;
-    };
-    let Ok(family) = family_id(&fd) else {
-        return 0;
-    };
-    let request = message(
-        family,
-        NL80211_CMD_GET_STATION,
-        NLM_F_DUMP,
-        &attr(ATTR_IFINDEX, &index.to_ne_bytes()),
-    );
-    let Ok(payloads) = call(&fd, &request) else {
-        return 0;
-    };
-    // One answer per station; each carries the nested STA_INFO.
-    payloads.iter().filter(|p| Attrs(&p[..]).any(|(kind, _)| kind == ATTR_STA_INFO)).count()
-}
-
-/// The regulatory domain the kernel has applied, as opposed to one merely requested.
 #[cfg(target_os = "linux")]
 pub fn regulatory_country() -> Option<String> {
     let fd = open().ok()?;
@@ -335,7 +302,6 @@ fn country(fd: &OwnedFd, family: u16) -> Result<String, String> {
     Err("no regulatory domain".into())
 }
 
-/// One radio and the channels the kernel reports for it.
 #[cfg(target_os = "linux")]
 struct Radio {
     id: u32,
@@ -343,15 +309,14 @@ struct Radio {
     channels: Vec<Channel>,
 }
 
-/// One frequency as the kernel describes it. `dbm` is the permitted EIRP, 0 when it says
-/// nothing.
+/// `dbm` is the permitted EIRP, 0 when the kernel names none.
 struct Channel {
     freq: u32,
     flags: String,
     dbm: u32,
 }
 
-/// Every radio the kernel knows, kept apart. The dump is asked for split.
+/// A split dump spreads one radio over several messages.
 #[cfg(target_os = "linux")]
 fn radios(fd: &OwnedFd, family: u16) -> Result<Vec<Radio>, String> {
     let split = attr(ATTR_SPLIT_WIPHY_DUMP, &[]);
@@ -406,7 +371,7 @@ fn text(value: &[u8]) -> String {
     String::from_utf8_lossy(&value[..end]).into_owned()
 }
 
-/// One frequency with the flags the kernel put on it. Power comes in mBm.
+/// Power comes in mBm.
 fn frequency(attrs: &[u8]) -> Option<Channel> {
     let mut freq = None;
     let mut dbm = 0;
@@ -431,7 +396,7 @@ fn frequency(attrs: &[u8]) -> Option<Channel> {
     Some(Channel { freq: freq?, flags: flags.join(","), dbm })
 }
 
-/// The channel number for a frequency, the way hostapd wants it written.
+/// The channel number as hostapd wants it.
 fn channel_of(freq: u32) -> Option<u32> {
     match freq {
         2484 => Some(14),
@@ -441,7 +406,6 @@ fn channel_of(freq: u32) -> Option<u32> {
     }
 }
 
-/// One request with its generic netlink header, ready to send.
 fn message(family: u16, cmd: u8, flags: u16, attrs: &[u8]) -> Vec<u8> {
     let len = HDR + attrs.len();
     let mut m = Vec::with_capacity(len);
@@ -472,7 +436,6 @@ const fn align(n: usize) -> usize {
     (n + 3) & !3
 }
 
-/// Sends one request and hands back the payload of every answer, up to the end of the dump.
 #[cfg(target_os = "linux")]
 fn call(fd: &OwnedFd, request: &[u8]) -> Result<Vec<Vec<u8>>, String> {
     let sent = unsafe {
@@ -516,7 +479,6 @@ fn call(fd: &OwnedFd, request: &[u8]) -> Result<Vec<Vec<u8>>, String> {
     }
 }
 
-/// Walks a netlink attribute list.
 struct Attrs<'a>(&'a [u8]);
 
 impl<'a> Iterator for Attrs<'a> {
@@ -612,5 +574,21 @@ mod tests {
         assert_eq!(super::width_mhz(3), 80);
         assert_eq!(super::width_mhz(5), 160);
         assert_eq!(super::width_mhz(99), 0);
+    }
+
+    #[test]
+    fn one_station_dump_counts_the_phones_and_takes_the_first_rates() {
+        let mut info =
+            attr(STA_INFO_RX_BITRATE, &attr(RATE_INFO_BITRATE32, &8660u32.to_ne_bytes()));
+        info.extend(attr(STA_INFO_TX_BITRATE, &attr(RATE_INFO_BITRATE, &4000u16.to_ne_bytes())));
+        let phone = attr(ATTR_STA_INFO, &info);
+        let quiet = attr(ATTR_STA_INFO, &[]);
+        let no_station = attr(ATTR_IFINDEX, &3u32.to_ne_bytes());
+        assert_eq!(
+            stations_in(&[quiet.clone(), phone, no_station]),
+            Stations { count: 2, rates: Some((866, 400)) }
+        );
+        assert_eq!(stations_in(&[quiet]), Stations { count: 1, rates: None });
+        assert_eq!(stations_in(&[]), Stations::default());
     }
 }

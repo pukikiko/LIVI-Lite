@@ -1,10 +1,6 @@
-//! Framing and decryption of the CarPlay screen stream.
-//!
-//! Bytes arrive from a socket in arbitrary chunks. Each message is a 128-byte
-//! header followed by its body. The header's first four bytes carry the body
-//! size, little endian, the fifth carries the opcode. Frame bodies are
-//! ChaCha20-Poly1305 sealed with the header as associated data and a nonce
-//! counting messages from zero.
+//! Each message is a 128-byte header followed by its body. The header's first four bytes carry
+//! the body size, little endian, the fifth carries the opcode. Frame bodies are ChaCha20-Poly1305
+//! sealed with the header as associated data and a nonce counting messages from zero.
 
 use livi_crypto_node::open_impl;
 use livi_video_nal::{CpCodec, detect_codec};
@@ -15,12 +11,9 @@ const OP_VIDEO_CONFIG: u8 = 1;
 const MAX_BODY: usize = 8 * 1024 * 1024;
 const TAG_LEN: usize = 16;
 
-/// A body size beyond `MAX_BODY`. The caller drops the connection.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Implausible(pub usize);
 
-/// What a stream reports as it reads: the codec and its configuration record,
-/// every decrypted frame, and the first frame of a connection.
 pub trait ScreenSink {
     fn on_config(&mut self, codec: CpCodec, atom: &[u8]);
     fn on_frame(&mut self, nal: &[u8]);
@@ -40,14 +33,12 @@ impl ScreenStream {
         Self { key, counter: 0, acc: Vec::new(), started: false, sink }
     }
 
-    /// Forgets a half-received message and starts the nonce over.
     pub fn reset(&mut self) {
         self.acc.clear();
         self.counter = 0;
         self.started = false;
     }
 
-    /// Takes the next chunk and reports every message it completes.
     pub fn push(&mut self, chunk: &[u8]) -> Result<(), Implausible> {
         self.acc.extend_from_slice(chunk);
         loop {
@@ -102,8 +93,6 @@ impl ScreenStream {
         self.sink.on_frame(frame);
     }
 
-    /// Decrypts the body of message `counter`, with the header as associated
-    /// data.
     fn open(key: &[u8; 32], counter: u64, header: &[u8], body: &[u8]) -> Option<Vec<u8>> {
         let mut nonce = [0u8; 12];
         nonce[4..].copy_from_slice(&counter.to_le_bytes());
@@ -125,8 +114,6 @@ mod tests {
         started: usize,
     }
 
-    /// A sink and the reader of what it collected: the stream takes one handle,
-    /// the test keeps another.
     #[derive(Default, Clone)]
     struct Seen(std::rc::Rc<std::cell::RefCell<Reports>>);
 
@@ -220,7 +207,6 @@ mod tests {
         assert!(seen.frames().is_empty());
         assert_eq!(seen.started(), 0);
 
-        // the next frame still counts as the first
         s.push(&sealed_frame(0, b"again")).unwrap();
         assert_eq!(seen.frames(), vec![b"again".to_vec()]);
     }
@@ -297,7 +283,6 @@ mod tests {
     }
 }
 
-#[cfg(target_os = "linux")]
 pub mod receiver {
     use super::{ScreenSink, ScreenStream};
     use glib::IOCondition;
@@ -308,9 +293,6 @@ pub mod receiver {
     use std::os::fd::{AsRawFd, RawFd};
     use std::rc::Rc;
 
-    /// One listening port for a phone's screen stream. A second connection is
-    /// refused while one is open, and every chunk goes to the stream, which
-    /// answers whether the connection may stay.
     pub struct ScreenReceiver {
         listener: TcpListener,
         sources: Vec<glib::SourceId>,

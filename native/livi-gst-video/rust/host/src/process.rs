@@ -1,6 +1,3 @@
-//! The process around the host: the socket the main process serves, the GLib
-//! main loop the pipelines need, and the backtrace a crash leaves behind.
-
 use core::ffi::{c_char, c_int, c_void};
 use std::cell::RefCell;
 use std::ffi::CString;
@@ -16,14 +13,12 @@ use glib::IOCondition;
 use crate::gst::Gst;
 use crate::{Host, Wire};
 
-/// How often every receiver reports what it saw.
 const STATS_SECONDS: u32 = 5;
-/// How often the visualizer samples are drained to the main process.
 const VISUALIZER_INTERVAL_MS: u64 = 20;
 const CHUNK: usize = 65536;
 
-/// The audio receive threads reply through the same socket, so writes take the
-/// lock to keep the framed messages from interleaving.
+/// The audio receive threads reply through the same socket, the lock keeps frames from
+/// interleaving.
 struct SocketWire {
     sock: Arc<UnixStream>,
     write: Mutex<()>,
@@ -37,8 +32,7 @@ impl Wire for SocketWire {
     }
 }
 
-/// Connects to the host socket and runs the GLib main loop. In a process of
-/// its own, libwayland binds the system libffi, which keeps wayland marshalling
+/// In a process of its own, libwayland binds the system libffi, which keeps wayland marshalling
 /// intact across resizes.
 pub fn run(sock_path: &str, crash_log: &str) {
     glib::set_prgname(Some("livi-video"));
@@ -75,7 +69,7 @@ pub fn run(sock_path: &str, crash_log: &str) {
 
     let visualizer_host = host.clone();
     glib::timeout_add_local(std::time::Duration::from_millis(VISUALIZER_INTERVAL_MS), move || {
-        visualizer_host.borrow().pump_visualizer();
+        visualizer_host.borrow_mut().pump_visualizer();
         glib::ControlFlow::Continue
     });
 
@@ -89,13 +83,17 @@ pub fn run(sock_path: &str, crash_log: &str) {
     glib::MainLoop::new(None, false).run();
 }
 
-/// Where the backtrace goes besides stderr. Set before the handler arms and
-/// read from the signal handler, so it stays a plain pointer.
+/// Read from the signal handler, so it stays a plain pointer.
 static CRASH_PATH: AtomicPtr<c_char> = AtomicPtr::new(core::ptr::null_mut());
 
+/// The default action, 0 on every unix.
+const SIG_DFL: usize = 0;
+
+// Declared here because libc types the handler differently on Linux and macOS.
 unsafe extern "C" {
     fn backtrace(buffer: *mut *mut c_void, size: c_int) -> c_int;
     fn backtrace_symbols_fd(buffer: *const *mut c_void, size: c_int, fd: c_int);
+    fn signal(sig: c_int, handler: usize) -> usize;
 }
 
 extern "C" fn on_crash(sig: c_int) {
@@ -121,7 +119,7 @@ extern "C" fn on_crash(sig: c_int) {
     }
 
     unsafe {
-        libc::signal(sig, libc::SIG_DFL);
+        signal(sig, SIG_DFL);
         libc::raise(sig);
     }
 }
@@ -133,7 +131,7 @@ fn arm_crash_handler(crash_log: &str) {
         CRASH_PATH.store(path.into_raw(), Ordering::Relaxed);
     }
     unsafe {
-        libc::signal(libc::SIGSEGV, on_crash as *const () as libc::sighandler_t);
-        libc::signal(libc::SIGABRT, on_crash as *const () as libc::sighandler_t);
+        signal(libc::SIGSEGV, on_crash as *const () as usize);
+        signal(libc::SIGABRT, on_crash as *const () as usize);
     }
 }

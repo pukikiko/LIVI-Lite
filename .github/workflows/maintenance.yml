@@ -67,7 +67,7 @@ jobs:
             "/repos/${GITHUB_REPOSITORY}/actions/caches" \
             --paginate \
             --jq '.actions_caches[]
-              | select(.key | startswith("pnpm-store-") or startswith("build-cache-") or startswith("electron-cache-") or startswith("eb-cache-"))
+              | select(.key | startswith("pnpm-store-"))
               | "\(.id) \(.last_accessed_at) \(.ref) \(.key)"' \
             | sort -k2 -r || true)"
 
@@ -75,60 +75,16 @@ jobs:
             exit 0
           fi
 
-          declare -A KEEP_FOR_GROUP=()
+          declare -A KEEP_FOR_REF=()
 
+          # Newest first, so the first store of each branch survives.
           while read -r ID LAST REF KEY; do
             [ -n "${ID}" ] || continue
 
-            case "${KEY}" in
-              pnpm-store-*)
-                GROUP="pnpm-store"
-                ;;
-              build-cache-*)
-                GROUP="build-cache"
-                ;;
-              electron-cache-*)
-                GROUP="electron-cache"
-                ;;
-              eb-cache-*)
-                GROUP="eb-cache"
-                ;;
-              *)
-                continue
-                ;;
-            esac
-
-            GROUP="${GROUP}::${REF}"
-            if [ -z "${KEEP_FOR_GROUP[${GROUP}]+x}" ]; then
-              KEEP_FOR_GROUP["${GROUP}"]="${ID}"
+            if [ -z "${KEEP_FOR_REF[${REF}]+x}" ]; then
+              KEEP_FOR_REF["${REF}"]="${ID}"
+              continue
             fi
-          done <<< "${CACHES}"
-
-          while read -r ID LAST REF KEY; do
-            [ -n "${ID}" ] || continue
-
-            case "${KEY}" in
-              pnpm-store-*)
-                GROUP="pnpm-store"
-                ;;
-              build-cache-*)
-                GROUP="build-cache"
-                ;;
-              electron-cache-*)
-                GROUP="electron-cache"
-                ;;
-              eb-cache-*)
-                GROUP="eb-cache"
-                ;;
-              *)
-                continue
-                ;;
-            esac
-
-            GROUP="${GROUP}::${REF}"
-            KEEP_ID="${KEEP_FOR_GROUP[${GROUP}]}"
-            if [ "${ID}" != "${KEEP_ID}" ]; then
-              gh api -X DELETE -H "Accept: application/vnd.github+json" \
-                "/repos/${GITHUB_REPOSITORY}/actions/caches/${ID}" >/dev/null
-            fi
+            gh api -X DELETE -H "Accept: application/vnd.github+json" \
+              "/repos/${GITHUB_REPOSITORY}/actions/caches/${ID}" >/dev/null
           done <<< "${CACHES}"

@@ -56,6 +56,7 @@ fn main() {
 
     host::init(&mut state, &event_loop.handle());
     ctrl::init(&mut state, &event_loop.handle());
+    ctrl::leave_with_core(&event_loop.handle());
     spawn::spawn_startup(&mut state);
 
     log::info!("Running livi-compositor on WAYLAND_DISPLAY={}", state.ui_socket);

@@ -1,5 +1,3 @@
-// Userspace NCM host for the iPhone's CarPlay network function.
-
 use std::fs;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::path::Path;
@@ -28,18 +26,15 @@ const SET_NTB_FORMAT: u8 = 0x84;
 const SET_NTB_INPUT_SIZE: u8 = 0x86;
 const SET_CRC_MODE: u8 = 0x8a;
 const SET_ETHERNET_PACKET_FILTER: u8 = 0x43;
-/// Directed, broadcast and all multicast, as cdc_ncm asks for it.
+/// Directed, broadcast and all multicast.
 const PACKET_FILTER: u16 = 0x000e;
 const NTB_INPUT_SIZE: u32 = 16384;
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(1);
-/// How many link notifications are logged, the rest are only read.
-const NOTIFICATIONS_LOGGED: usize = 8;
 
 static TAP_SEQ: AtomicU16 = AtomicU16::new(0);
 
 pub struct NcmBridge {
     pub ifname: String,
-    /// None when the kernel already provides the interface and nothing needs bridging.
     run: Option<Arc<AtomicBool>>,
     /// Held for the bridge's life: letting go hands the function back to cdc_ncm.
     _control: Option<Interface>,
@@ -53,14 +48,12 @@ impl Drop for NcmBridge {
     }
 }
 
-/// Control/data interface pair of the NCM function in the active configuration, plus the
-/// data endpoints, all read from the descriptors so model differences don't matter.
+/// Read from the descriptors, since they differ between iPhone models.
 struct NcmFunction {
     control: u8,
     data: u8,
     ep_in: u8,
     ep_out: u8,
-    /// The control interface's interrupt endpoint, where the link notifications come.
     ep_notify: Option<u8>,
 }
 
@@ -105,8 +98,6 @@ fn find_ncm_function(device: &Device) -> Option<NcmFunction> {
     None
 }
 
-/// The interface the kernel's cdc_ncm driver created for this phone, if any; it carries the
-/// AV link.
 fn kernel_ncm_iface(sysfs: &Path) -> Option<String> {
     let root = sysfs.canonicalize().ok()?;
     for e in fs::read_dir("/sys/class/net").ok()?.flatten() {
@@ -150,11 +141,10 @@ fn run_cmd(program: &str, args: &[&str]) -> bool {
 }
 
 /// Link-local only, since NetworkManager takes a link down when its DHCP gets no answer. Bound
-/// to the MAC, not the name: a LIVI Link is a usb0 too, and there the host is a DHCP client.
+/// to the MAC, because a LIVI Link is a usb0 too and there the host is a DHCP client.
 fn link_local_profile(ifname: &str) {
     let _ = fs::write(format!("/proc/sys/net/ipv6/conf/{ifname}/accept_dad"), "0");
     run_cmd("ip", &["link", "set", ifname, "up"]);
-    // What earlier builds bound to the interface name.
     run_cmd("nmcli", &["connection", "delete", &format!("livi-carkit-{ifname}")]);
     let Ok(mac) = fs::read_to_string(format!("/sys/class/net/{ifname}/address")) else { return };
     let mac = mac.trim().to_uppercase();
@@ -219,7 +209,7 @@ impl NcmBridge {
             .wait()
             .map_err(|e| format!("claim NCM data {}: {e}", func.data))?;
         ncm_setup(&control, func.control);
-        // Alt setting 1 is the one with the bulk endpoints; alt 0 carries no data.
+        // Alt setting 1 has the bulk endpoints, alt 0 carries no data.
         data_iface.set_alt_setting(1).wait().map_err(|e| format!("NCM alt setting: {e}"))?;
         // The phone reports the link up, and passes traffic, only once a packet filter is set.
         if let Err(e) =
@@ -291,8 +281,7 @@ fn class_out(
         .map_err(|e| format!("request 0x{request:02x}: {e}"))
 }
 
-/// What an NCM host settles with the function before its data path opens: NTB parameters,
-/// no CRC, 16-bit NTBs and the input size.
+/// Value 0 selects no CRC and 16-bit NTBs.
 fn ncm_setup(control: &Interface, iface: u8) {
     let params = control
         .control_in(
@@ -322,20 +311,13 @@ fn ncm_setup(control: &Interface, iface: u8) {
     }
 }
 
-/// Reads the link notifications so the phone can hand them over, and logs the first ones.
+/// The phone needs its link notifications read.
 fn spawn_notifications(mut ep: Endpoint<Interrupt, In>, run: Arc<AtomicBool>) {
     std::thread::spawn(move || {
-        let mut logged = 0;
         while run.load(Ordering::SeqCst) {
             let len = ep.max_packet_size().max(1);
             let completion = ep.transfer_blocking(Buffer::new(len), Duration::from_millis(2000));
             match completion.status {
-                Ok(()) if logged < NOTIFICATIONS_LOGGED => {
-                    logged += 1;
-                    let bytes: Vec<String> =
-                        completion.buffer.iter().map(|b| format!("{b:02x}")).collect();
-                    println!("[ncm] link notification {}", bytes.join(" "));
-                }
                 Ok(()) => {}
                 Err(e) if is_timeout(&e) => {}
                 Err(_) => return,
@@ -406,8 +388,8 @@ fn write_fd(fd: RawFd, buf: &[u8]) -> std::io::Result<()> {
     if n < 0 { Err(std::io::Error::last_os_error()) } else { Ok(()) }
 }
 
-/// The host-side MAC of the link, from the USB string the CDC Ethernet functional descriptor
-/// names.
+/// Type 0x24 subtype 0x0F is the CDC Ethernet functional descriptor, its byte 3 indexes the
+/// string that holds the MAC.
 fn host_mac(device: &Device, sysfs: &Path, control_if: u8) -> Option<String> {
     let raw = fs::read(sysfs.join("descriptors")).ok()?;
     let mut idx = 0usize;

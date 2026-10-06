@@ -1,4 +1,4 @@
-# LIVI system package manifest, read by the installers and the in-app check.
+# LIVI system package manifest, read by the installers.
 #
 # Format: <section>|<package>|<probe>|<purpose>|<fedora-package>
 #   <package>        Debian name (apt)

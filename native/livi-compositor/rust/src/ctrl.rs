@@ -2,7 +2,8 @@
 //! Commands: screen <role> <0|1> [w h] | claim <tag> | unclaim <tag> |
 //! videocfg <tag> <screen> <crop...> | videoshow <tag> <0|1> |
 //! backdrop <r> <g> <b> | gamma <g> <c> <r> <g> <b> | restart
-//! Events out: "panel <role> <mm_w> <mm_h> <px_w> <px_h>" | "bound <tag>"
+//! Events out: "panel <role> <mm_w> <mm_h> <px_w> <px_h>" | "bound <tag>" |
+//! "ui <wayland-socket> <render-node or ->"
 
 use std::io::{Read, Write};
 use std::os::unix::net::UnixListener;
@@ -12,6 +13,33 @@ use smithay::reexports::calloop::generic::Generic;
 use smithay::reexports::calloop::{Interest, LoopHandle, Mode, PostAction};
 
 use crate::state::LiviState;
+
+/// Core starts the compositor with a pipe as stdin. Its end means core died,
+/// even on SIGKILL, and the compositor stops with it.
+pub fn leave_with_core(handle: &LoopHandle<'static, LiviState>) {
+    if !std::env::var("LIVI_LIFELINE").is_ok_and(|v| v == "1") {
+        return;
+    }
+    handle
+        .insert_source(
+            Generic::new(std::io::stdin(), Interest::READ, Mode::Level),
+            |_, _, state: &mut LiviState| {
+                let mut buf = [0u8; 64];
+                match std::io::stdin().read(&mut buf) {
+                    Ok(n) if n > 0 => Ok(PostAction::Continue),
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {
+                        Ok(PostAction::Continue)
+                    }
+                    _ => {
+                        log::info!("core is gone, the compositor stops");
+                        state.running = false;
+                        Ok(PostAction::Remove)
+                    }
+                }
+            },
+        )
+        .expect("insert core lifeline");
+}
 
 pub fn init(state: &mut LiviState, handle: &LoopHandle<'static, LiviState>) {
     let Some(path) = state.ctrl_path.clone() else {
@@ -35,6 +63,7 @@ pub fn init(state: &mut LiviState, handle: &LoopHandle<'static, LiviState>) {
                     state.ctrl_client = Some(client);
                     state.ctrl_buf.clear();
                     state.ctrl_out.clear();
+                    send_ui(state);
                     send_panels(state);
                 }
                 Ok(PostAction::Continue)
@@ -42,7 +71,6 @@ pub fn init(state: &mut LiviState, handle: &LoopHandle<'static, LiviState>) {
         )
         .expect("insert ctrl listener");
 
-    // The client stream is polled from the loop turn: small and line-based.
     handle
         .insert_source(
             smithay::reexports::calloop::timer::Timer::from_duration(Duration::from_millis(20)),
@@ -58,7 +86,6 @@ pub fn init(state: &mut LiviState, handle: &LoopHandle<'static, LiviState>) {
     log::info!("control socket at {path}");
 }
 
-/// A read can end mid-line, so the remainder is carried over to the next poll.
 fn poll_client(state: &mut LiviState) {
     let Some(client) = state.ctrl_client.as_mut() else {
         return;
@@ -85,7 +112,6 @@ fn poll_client(state: &mut LiviState) {
         return;
     }
     state.ctrl_buf.push_str(&String::from_utf8_lossy(&chunk));
-    // A peer that never sends a newline must not grow this without bound.
     if state.ctrl_buf.len() > 64 * 1024 {
         log::warn!("control buffer overflow, dropping {} bytes", state.ctrl_buf.len());
         state.ctrl_buf.clear();
@@ -101,8 +127,7 @@ fn poll_client(state: &mut LiviState) {
     }
 }
 
-/// The socket is non-blocking, so writes are queued and retried on the next
-/// poll. The host's claim handshake waits for the `bound` ack.
+/// Nothing may be dropped, the host's claim handshake waits for the `bound` ack.
 pub fn send(state: &mut LiviState, line: &str) {
     state.ctrl_out.extend_from_slice(line.as_bytes());
     flush_out(state);
@@ -129,6 +154,15 @@ fn flush_out(state: &mut LiviState) {
             }
         }
     }
+}
+
+/// A video pipeline the client starts must reach our display and decode on the GPU we render
+/// with.
+fn send_ui(state: &mut LiviState) {
+    let node =
+        state.render_node.as_ref().map_or_else(|| "-".to_string(), |p| p.display().to_string());
+    let line = format!("ui {} {node}\n", state.ui_socket);
+    send(state, &line);
 }
 
 pub fn send_panels(state: &mut LiviState) {

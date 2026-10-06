@@ -1,7 +1,3 @@
-//! Server-side protocol handlers: compositor, xdg-shell (with the LIVI
-//! classify-and-route on the initial commit), forced server-side decorations,
-//! seat, shm/dmabuf and viewporter.
-
 use smithay::backend::renderer::utils::on_commit_buffer_handler;
 use smithay::input::pointer::{CursorIcon, CursorImageStatus};
 use smithay::input::{Seat, SeatHandler, SeatState};
@@ -75,24 +71,18 @@ impl CompositorHandler for LiviState {
         }
         if let Some(idx) = self.toplevels.iter().position(|t| t.toplevel.wl_surface() == &root) {
             classify_on_initial_commit(self, idx);
-            // dialogs stay centered as their content resizes
             self.center_dialog_by_surface(&root);
             crate::host::damage_all(self);
         }
     }
 }
 
-/// The LIVI routing decision, made once the surface has told us who it is.
-/// waylandsink planes carry app_id "livi-video" and take the oldest claim tag.
-/// Everything else is UI, routed by its "livi:<role>" title (untitled -> main).
-/// A UI window with a foreign app_id is a centered overlay dialog.
 fn classify_on_initial_commit(state: &mut LiviState, idx: usize) {
     if state.toplevels[idx].kind != Kind::Pending {
         return;
     }
     let toplevel = state.toplevels[idx].toplevel.clone();
     if !toplevel.is_initial_configure_sent() {
-        // First commit: force server-side decorations, then wait for app_id/title.
         toplevel.with_pending_state(|st| {
             st.decoration_mode = Some(DecoMode::ServerSide);
         });
@@ -126,7 +116,6 @@ fn classify_on_initial_commit(state: &mut LiviState, idx: usize) {
             state.toplevels[idx].awaiting_claim = true;
             log::warn!("video plane arrived before its claim, waiting for one");
         }
-        // within the video layer: the main stream sits above secondary streams
         if state.toplevels[idx].tag == "main" {
             state.video_order.push(idx);
         } else {
@@ -168,7 +157,6 @@ fn classify_on_initial_commit(state: &mut LiviState, idx: usize) {
     } else {
         crate::layout::apply_ui_layout(state, screen_idx);
     }
-    // A window that arrives while nothing holds the keyboard takes it.
     if !has_keyboard_focus(state) {
         let surface = state.toplevels[idx].toplevel.wl_surface().clone();
         crate::input::focus_surface(state, &surface);
@@ -179,7 +167,6 @@ fn has_keyboard_focus(state: &LiviState) -> bool {
     state.seat.get_keyboard().is_some_and(|k| k.current_focus().is_some())
 }
 
-/// The main screen's UI window, which holds the keyboard when nothing else does.
 fn main_ui_surface(state: &LiviState) -> Option<WlSurface> {
     state
         .toplevels
@@ -188,8 +175,6 @@ fn main_ui_surface(state: &LiviState) -> Option<WlSurface> {
         .map(|t| t.toplevel.wl_surface().clone())
 }
 
-/// A plane still carrying `tag` is a leftover of the stream being replaced. It
-/// goes dark so the new one owns the tag alone.
 fn drop_stale_planes(state: &mut LiviState, keep: usize, tag: &str) {
     for (i, t) in state.toplevels.iter_mut().enumerate() {
         if i != keep && t.kind == Kind::Video && t.tag == tag {
@@ -199,9 +184,7 @@ fn drop_stale_planes(state: &mut LiviState, keep: usize, tag: &str) {
     }
 }
 
-/// Gives `tag` to a video plane whose window arrived before the claim did, and
-/// answers whether one was there. The two travel over different sockets, so
-/// either order reaches us.
+/// The claim and the plane's window travel over different sockets, so either can come first.
 pub fn bind_waiting_plane(state: &mut LiviState, tag: &str) -> bool {
     let Some(idx) = state.toplevels.iter().rposition(|t| t.kind == Kind::Video && t.awaiting_claim)
     else {
@@ -238,7 +221,6 @@ impl LiviState {
 
 fn center_dialog(state: &mut LiviState, idx: usize) {
     let s = &state.screens[state.toplevels[idx].screen_idx];
-    // Center from the current committed surface size.
     let (w, h) = crate::render::surface_size(state.toplevels[idx].toplevel.wl_surface());
     if w > 0 && h > 0 {
         let x = (s.x + (s.width - w) / 2).max(s.x);
@@ -313,12 +295,11 @@ impl XdgShellHandler for LiviState {
                 *i -= 1;
             }
         }
-        // The main UI quit -> the app is closing. On "restart" main() re-execs us.
-        if was == Kind::Ui && screen_idx == 0 {
+        // On "restart" main() re-execs us after this.
+        if was == Kind::Ui && screen_idx == 0 && self.startup_cmd.is_some() {
             log::info!("main UI toplevel gone -> shutting down");
             self.running = false;
         }
-        // The keyboard follows back to the UI when its holder goes.
         if had_focus && let Some(ui) = main_ui_surface(self) {
             crate::input::focus_surface(self, &ui);
         }
@@ -351,7 +332,6 @@ impl XdgShellHandler for LiviState {
         surface: ToplevelSurface,
         _output: Option<smithay::reexports::wayland_server::protocol::wl_output::WlOutput>,
     ) {
-        // Forward to the HOST window so app-driven kiosk/fullscreen fullscreens.
         let Some(idx) =
             self.toplevels.iter().position(|t| t.toplevel == surface && t.kind == Kind::Ui)
         else {
@@ -389,8 +369,7 @@ impl XdgShellHandler for LiviState {
 
 impl XdgDecorationHandler for LiviState {
     fn new_decoration(&mut self, toplevel: ToplevelSurface) {
-        // Server-side decorations for every client. Electron's GTK client-side
-        // path crashes.
+        // Electron's GTK client-side decoration path crashes.
         toplevel.with_pending_state(|st| {
             st.decoration_mode = Some(DecoMode::ServerSide);
         });
@@ -421,7 +400,6 @@ impl SeatHandler for LiviState {
         self.host.cursor = match image {
             CursorImageStatus::Hidden => None,
             CursorImageStatus::Named(icon) => Some(icon),
-            // A client-drawn image is not passed on, the host draws its own arrow.
             CursorImageStatus::Surface(_) => Some(CursorIcon::Default),
         };
         crate::host::apply_cursor(self);
@@ -467,8 +445,7 @@ impl DmabufHandler for LiviState {
         dmabuf: smithay::backend::allocator::dmabuf::Dmabuf,
         notifier: ImportNotifier,
     ) {
-        // Validate the import against the renderer, the texture import happens
-        // at render time.
+        // Only validated here, the texture import happens at render time.
         if crate::host::import_dmabuf(self, &dmabuf) {
             let _ = notifier.successful::<LiviState>();
         } else {

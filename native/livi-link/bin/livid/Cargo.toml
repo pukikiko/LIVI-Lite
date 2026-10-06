@@ -1,0 +1,21 @@
+[package]
+name = "livid"
+version = "0.1.0"
+edition.workspace = true
+
+[[bin]]
+name = "livid"
+path = "src/main.rs"
+
+[dependencies]
+livi-mdns  = { path = "../../crates/livi-mdns" }
+livi-wifid = { path = "../../crates/livi-wifid" }
+livi-web   = { path = "../../crates/livi-web" }
+livi-btd   = { path = "../../crates/livi-btd" }
+livi-iapd  = { path = "../../crates/livi-iapd" }
+livi-wifi  = { path = "../../../livi-helperd/crates/livi-wifi" }
+livi-net   = { path = "../../../livi-helperd/crates/livi-net" }
+iap2-mfi   = { path = "../../../livi-helperd/crates/iap2-mfi" }
+libc.workspace = true
+[target.'cfg(not(target_arch = "riscv32"))'.dependencies]
+imx6ul-uboot = { path = "../../crates/imx6ul-uboot" }

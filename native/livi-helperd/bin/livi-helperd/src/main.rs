@@ -39,6 +39,29 @@ async fn shutdown_signal() {
     }
 }
 
+/// Core starts the helper with a pipe as stdin. It ends when core dies, even on
+/// SIGKILL, and the helper then cleans up as on TERM.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn leave_with_core() {
+    if !std::env::var("LIVI_LIFELINE").is_ok_and(|v| v == "1") {
+        return;
+    }
+    let _ = std::thread::Builder::new().name("lifeline".into()).spawn(|| {
+        let _ = std::io::copy(&mut std::io::stdin(), &mut std::io::sink());
+        // Core read stdout and stderr. With core gone every print would panic.
+        if let Ok(null) = std::fs::OpenOptions::new().write(true).open("/dev/null") {
+            use std::os::fd::AsRawFd;
+            // SAFETY: both descriptors stay open, only their target changes.
+            unsafe {
+                libc::dup2(null.as_raw_fd(), libc::STDOUT_FILENO);
+                libc::dup2(null.as_raw_fd(), libc::STDERR_FILENO);
+            }
+        }
+        // SAFETY: a signal to this process.
+        unsafe { libc::kill(libc::getpid(), libc::SIGTERM) };
+    });
+}
+
 fn unknown_switch<I: Iterator<Item = String>>(args: I) -> Option<String> {
     args.take_while(|a| a.starts_with("--")).find(|a| !SWITCHES.contains(&a.as_str()))
 }
@@ -81,10 +104,12 @@ fn main() -> ExitCode {
         if std::env::args().any(|a| a == "--wifi-ap") {
             return linux_main::run_wifi_ap();
         }
+        leave_with_core();
         linux_main::run()
     }
     #[cfg(target_os = "macos")]
     {
+        leave_with_core();
         mac_main::run()
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]

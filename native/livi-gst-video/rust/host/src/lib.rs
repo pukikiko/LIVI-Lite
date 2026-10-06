@@ -1,7 +1,3 @@
-//! The gst-host process: it serves the unix socket the main process connects
-//! to, keeps the planes that process asks for, and feeds them from the CarPlay
-//! screen receivers. The pipelines themselves live in the player crate.
-
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -12,16 +8,19 @@ use livi_audio_stream::{AudioSink, Codec as AudioCodec};
 use livi_audio_uplink::UplinkCodec;
 use livi_host_proto::{
     CLUSTER_PLANE_MAX, CLUSTER_PLANE_MIN, CLUSTER_RECV_ID, Framer, feed as feedproto, feeder_of,
+    parse_plane_body,
 };
 use livi_screen_stream::ScreenSink;
 use livi_video_fanout::Fanout;
 use livi_video_nal::CpCodec;
 
-#[cfg(target_os = "linux")]
 pub mod feed;
 pub mod gst;
-#[cfg(target_os = "linux")]
 pub mod process;
+mod spectrum;
+pub mod ui_plane;
+
+use spectrum::Spectrum;
 
 const OP_CREATE: u8 = 1;
 const OP_DATA: u8 = 2;
@@ -41,6 +40,7 @@ const OP_AUDIO_ACTIVE: u8 = 13;
 const OP_AUDIO_DATA: u8 = 14;
 const OP_VISUALIZER: u8 = 15;
 const OP_FEED_OPEN: u8 = 16;
+const OP_AUDIO_OUTPUT: u8 = 17;
 
 const REPLY_PORT: u8 = 1;
 const REPLY_CONFIG: u8 = 2;
@@ -50,21 +50,16 @@ const REPLY_AUDIO_STARTED: u8 = 5;
 const REPLY_VISUALIZER: u8 = 6;
 const REPLY_FEED: u8 = 7;
 
-/// One audio stream from its RTP packets to the sink.
 pub trait Speaker: Send + Sync + 'static {
     fn push_rtp(&self, rtp: &[u8]);
-    /// Samples the main process handed over, for the drivers that decode
-    /// themselves.
     fn push_samples(&self, samples: &[u8]);
-    /// Sets the level at once, or glides to it over `ms`.
     fn set_volume(&self, level: f64, ms: u64);
-    /// Turns the pre-fader tap on or off.
+    /// The tap is pre-fader.
     fn set_visualizer_enabled(&self, on: bool);
-    /// Drains the tapped mono samples with their rate.
+    /// Mono samples and their rate.
     fn take_visualizer(&self) -> Option<(Vec<u8>, u32)>;
 }
 
-/// What one audio stream is set up with.
 pub struct AudioConfig {
     pub codec: AudioCodec,
     pub payload_type: u8,
@@ -76,7 +71,6 @@ pub struct AudioConfig {
     pub key: [u8; 32],
 }
 
-/// What the microphone stream is set up with.
 pub struct UplinkConfig {
     pub codec: UplinkCodec,
     pub payload_type: u8,
@@ -90,7 +84,6 @@ pub struct UplinkConfig {
     pub device: Option<String>,
 }
 
-/// A microphone tap: raw samples of this format go to whoever listens on the path.
 pub struct TapConfig {
     pub sample_rate: u32,
     pub channels: u8,
@@ -98,70 +91,60 @@ pub struct TapConfig {
     pub path: String,
 }
 
-/// One decoding pipeline.
 pub trait Plane: 'static {
     fn start(&self);
     fn push(&self, nal: &[u8]);
-    /// Drops what is still queued from the feeder that was there before.
     fn flush(&self);
     fn set_gamma(&self, gamma: f64, contrast: f64, r: f64, g: f64, b: f64);
 }
 
-/// Everything the host reaches for outside itself: the decoding pipelines and
-/// the port a phone sends its screen to. The process wires these to GStreamer
-/// and to a listening socket, tests put stand-ins in their place.
 pub trait Outside: 'static {
     type Plane: Plane;
-    /// The open socket. Dropping it stops the listening.
+    /// Dropping it stops the listening.
     type Ears;
 
     type Speaker: Speaker;
-    /// The open sockets. Dropping them stops the listening.
+    /// Dropping them stops the listening.
     type AudioEars;
 
-    fn create_plane(&self, codec: &str, codec_data: &[u8]) -> Option<Self::Plane>;
+    fn create_plane(&self, id: u32, codec: &str, codec_data: &[u8]) -> Option<Self::Plane>;
 
-    /// Starts listening and answers with the port to tell the phone about.
+    /// The port is the one to tell the phone about.
     fn listen(&self, key: [u8; 32], sink: Box<dyn ScreenSink>) -> Option<(Self::Ears, u16)>;
 
-    /// The capture chain, running for as long as it is held.
+    /// Captures for as long as it is held.
     type Uplink;
 
     fn create_speaker(&self, cfg: &AudioConfig) -> Option<Self::Speaker>;
 
     fn open_uplink(&self, cfg: UplinkConfig) -> Option<Self::Uplink>;
-    /// The capture that hands its samples to a socket, running for as long as it is held.
+    /// Captures for as long as it is held.
     type Tap;
     fn open_tap(&self, cfg: TapConfig) -> Option<Self::Tap>;
 
-    /// Binds the audio ports and answers with data and control port.
+    /// The data port, then the control port.
     fn listen_audio(
         &self,
         key: [u8; 32],
         sink: Box<dyn AudioSink + Send>,
     ) -> Option<(Self::AudioEars, u16, u16)>;
 
-    /// The open feed socket. Dropping it stops the listening.
+    /// Dropping it stops the listening.
     type FeedEars;
 
-    /// Binds the socket a helper streams media into.
     fn open_feed(&self, path: &str, sink: Box<dyn MediaSink>) -> Option<Self::FeedEars>;
 }
 
-/// Where the records of the helper's feed go.
 pub trait MediaSink {
     fn on_record(&mut self, record: feedproto::Record);
 }
 
-/// Where replies go: the socket in the process, a collector in tests.
 pub trait Wire: Send + Sync {
     fn reply(&self, op: u8, id: u32, rest: &[u8]);
 }
 
 type Planes<P> = Rc<RefCell<HashMap<u32, P>>>;
 
-/// What a receiver and its feed share: which planes the frames are for, the
-/// last configuration record, and the gate that decides what passes.
 struct ReceiverState {
     plane_id: u32,
     is_cluster: bool,
@@ -171,8 +154,6 @@ struct ReceiverState {
 }
 
 impl ReceiverState {
-    /// A cluster receiver serves every cluster plane, any other one serves the
-    /// plane it was opened for.
     fn for_each_target<P: Plane>(&self, planes: &HashMap<u32, P>, mut f: impl FnMut(&P)) {
         if self.is_cluster {
             for id in CLUSTER_PLANE_MIN..=CLUSTER_PLANE_MAX {
@@ -192,7 +173,6 @@ impl ReceiverState {
     }
 }
 
-/// Carries what a receiver reads into the planes it serves.
 struct Feed<O: Outside> {
     state: Rc<RefCell<ReceiverState>>,
     planes: Planes<O::Plane>,
@@ -203,7 +183,7 @@ impl<O: Outside> ScreenSink for Feed<O> {
     fn on_config(&mut self, codec: CpCodec, atom: &[u8]) {
         let mut st = self.state.borrow_mut();
         st.fan.set_codec(codec);
-        // a keepalive config carries no record, the last one stays
+        // A keepalive config carries no record.
         if atom.is_empty() {
             return;
         }
@@ -237,13 +217,33 @@ struct Receiver<E> {
     _ears: E,
 }
 
-/// Carries what an audio receiver reads into its pipeline.
+struct Output<S> {
+    now: std::sync::Mutex<Arc<S>>,
+}
+
+impl<S> Output<S> {
+    fn new(speaker: S) -> Arc<Self> {
+        Arc::new(Self { now: std::sync::Mutex::new(Arc::new(speaker)) })
+    }
+
+    fn get(&self) -> Arc<S> {
+        self.now.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    fn replace(&self, speaker: S) {
+        let old = std::mem::replace(
+            &mut *self.now.lock().unwrap_or_else(|e| e.into_inner()),
+            Arc::new(speaker),
+        );
+        drop(old);
+    }
+}
+
 struct AudioFeed<O: Outside> {
-    speaker: Arc<O::Speaker>,
+    speaker: Arc<Output<O::Speaker>>,
     wire: Arc<dyn Wire>,
     id: u32,
-    /// One phone at a time reaches the sink. A held session keeps its ports and
-    /// its pipeline, but its packets stop here.
+    /// One phone at a time reaches the sink.
     active: Arc<AtomicBool>,
 }
 
@@ -254,25 +254,25 @@ impl<O: Outside> AudioSink for AudioFeed<O> {
 
     fn on_rtp(&mut self, rtp: &[u8], _sample: u32) {
         if self.active.load(Ordering::Relaxed) {
-            self.speaker.push_rtp(rtp);
+            self.speaker.get().push_rtp(rtp);
         }
     }
 }
 
 struct AudioStream<S, E> {
-    speaker: Arc<S>,
+    speaker: Arc<Output<S>>,
+    cfg: AudioConfig,
+    level: Option<f64>,
     active: Arc<AtomicBool>,
     /// Absent while the main process feeds the stream itself.
     _ears: Option<E>,
 }
 
 type Streams<S, E> = Rc<RefCell<HashMap<u32, AudioStream<S, E>>>>;
-/// The keyframe gate per fed video stream, None for a codec it cannot read.
+/// None for a codec the gate cannot read.
 type FeedFans = Rc<RefCell<HashMap<u32, Option<Fanout>>>>;
-/// Whether a fed stream is the feeder of its plane, kept for streams that start later.
 type FeedWanted = Rc<RefCell<HashMap<u32, bool>>>;
 
-/// Carries the helper's feed into the planes and the audio streams.
 struct MediaFeed<O: Outside> {
     planes: Planes<O::Plane>,
     audio: Streams<O::Speaker, O::AudioEars>,
@@ -281,7 +281,6 @@ struct MediaFeed<O: Outside> {
 }
 
 impl<O: Outside> MediaFeed<O> {
-    /// The cluster id serves every cluster plane, any other id its own plane.
     fn for_each_target(planes: &HashMap<u32, O::Plane>, id: u32, mut f: impl FnMut(&O::Plane)) {
         if id == CLUSTER_RECV_ID {
             for cid in CLUSTER_PLANE_MIN..=CLUSTER_PLANE_MAX {
@@ -328,7 +327,7 @@ impl<O: Outside> MediaSink for MediaFeed<O> {
                 if let Some(a) = self.audio.borrow().get(&r.id)
                     && a.active.load(Ordering::Relaxed)
                 {
-                    a.speaker.push_samples(&r.payload);
+                    a.speaker.get().push_samples(&r.payload);
                 }
             }
             _ => {}
@@ -336,8 +335,6 @@ impl<O: Outside> MediaSink for MediaFeed<O> {
     }
 }
 
-/// Keeps the planes and the receivers, and acts on the messages the main
-/// process sends.
 pub struct Host<O: Outside> {
     outside: O,
     framer: Framer,
@@ -349,8 +346,8 @@ pub struct Host<O: Outside> {
     feed_fans: FeedFans,
     feed_wanted: FeedWanted,
     helper_feed: Option<O::FeedEars>,
-    /// A window wants the pre-fader tap.
     visualizer_enabled: bool,
+    spectrum: Spectrum,
     wire: Arc<dyn Wire>,
 }
 
@@ -368,12 +365,11 @@ impl<O: Outside> Host<O> {
             feed_wanted: Rc::new(RefCell::new(HashMap::new())),
             helper_feed: None,
             visualizer_enabled: false,
+            spectrum: Spectrum::new(),
             wire,
         }
     }
 
-    /// Takes the next chunk from the socket and acts on every message it
-    /// completes.
     pub fn feed(&mut self, chunk: &[u8]) {
         self.framer.push(chunk);
         while let Some(m) = self.framer.next_message() {
@@ -402,7 +398,7 @@ impl<O: Outside> Host<O> {
             // [8B level][4B ramp in ms, 0 for at once]
             OP_AUDIO_VOLUME => {
                 if rest.len() >= size_of::<f64>()
-                    && let Some(a) = self.audio.borrow().get(&id)
+                    && let Some(a) = self.audio.borrow_mut().get_mut(&id)
                 {
                     let level = f64::from_le_bytes(rest[..8].try_into().unwrap());
                     let ms = if rest.len() >= 12 {
@@ -410,9 +406,11 @@ impl<O: Outside> Host<O> {
                     } else {
                         0
                     };
-                    a.speaker.set_volume(level, ms);
+                    a.level = Some(level);
+                    a.speaker.get().set_volume(level, ms);
                 }
             }
+            OP_AUDIO_OUTPUT => self.set_audio_output(rest),
             OP_AUDIO_STOP => {
                 self.audio.borrow_mut().remove(&id);
             }
@@ -428,7 +426,7 @@ impl<O: Outside> Host<O> {
                 if let Some(a) = self.audio.borrow().get(&id)
                     && a.active.load(Ordering::Relaxed)
                 {
-                    a.speaker.push_samples(rest);
+                    a.speaker.get().push_samples(rest);
                 }
             }
             OP_AUDIO_ACTIVE => {
@@ -442,18 +440,12 @@ impl<O: Outside> Host<O> {
         }
     }
 
-    /// `[1B codecLen][codec ascii][codec_data]`. A plane created while a
-    /// receiver is already running is primed with the current GOP.
+    /// `[1B codecLen][codec ascii][codec_data]`
     fn create_plane(&mut self, id: u32, rest: &[u8]) {
-        const CODEC_MAX: usize = 15;
-        let clen = usize::from(*rest.first().unwrap_or(&0)).min(CODEC_MAX);
-        if rest.len() < 1 + clen {
-            return;
-        }
-        let codec = String::from_utf8_lossy(&rest[1..1 + clen]).into_owned();
+        let Some((codec, codec_data)) = parse_plane_body(rest) else { return };
 
         self.planes.borrow_mut().remove(&id);
-        let Some(plane) = self.outside.create_plane(&codec, &rest[1 + clen..]) else {
+        let Some(plane) = self.outside.create_plane(id, &codec, codec_data) else {
             eprintln!("livi: create player 0x{id:x} (codec {codec}) FAILED");
             return;
         };
@@ -473,8 +465,7 @@ impl<O: Outside> Host<O> {
         self.planes.borrow_mut().insert(id, plane);
     }
 
-    /// The socket path as utf-8. The helper connects there and streams media.
-    /// The reply carries the path back, or nothing when binding failed.
+    /// The socket path as utf-8. The reply carries the path back, empty when binding failed.
     fn open_feed(&mut self, id: u32, rest: &[u8]) {
         let Ok(path) = core::str::from_utf8(rest) else {
             return;
@@ -495,7 +486,6 @@ impl<O: Outside> Host<O> {
         }
     }
 
-    /// The receiver currently feeding `plane_id`.
     fn active_feeder(&self, plane_id: u32) -> Option<&Rc<RefCell<ReceiverState>>> {
         self.receivers.values().map(|r| &r.state).find(|state| {
             let st = state.borrow();
@@ -548,9 +538,8 @@ impl<O: Outside> Host<O> {
         self.wire.reply(REPLY_PORT, id, &port.to_le_bytes());
     }
 
-    /// `[1B active]`. The id names a receiver, or a fed stream by its plane id
-    /// (the cluster id for the cluster planes). Making one active makes every
-    /// other feeder of the same plane passive, so one screen has one feeder.
+    /// `[1B active]`. The id names a receiver, or a fed stream by its plane id (the cluster id
+    /// for cluster planes).
     fn set_active_feeder(&mut self, id: u32, rest: &[u8]) {
         let active = rest.first().is_some_and(|b| b & 1 != 0);
         let Some(state) = self.receivers.get(&id).map(|r| r.state.clone()) else {
@@ -586,7 +575,6 @@ impl<O: Outside> Host<O> {
         }
     }
 
-    /// A stream that has not started yet picks the answer up when it does.
     fn set_feed_active(&mut self, id: u32, active: bool) {
         self.feed_wanted.borrow_mut().insert(id, active);
         if let Some(Some(fan)) = self.feed_fans.borrow_mut().get_mut(&id) {
@@ -597,7 +585,7 @@ impl<O: Outside> Host<O> {
         }
     }
 
-    /// `[1B codec: 0 aac-lc, 1 opus, 2 lpcm][1B payloadType][4B clockRate]
+    /// `[1B codec: 0 aac-lc, 1 opus, 2 lpcm, 3 pcm-le][1B payloadType][4B clockRate]
     /// [1B channels][4B latencyMs][1B flags: bit0=realtime][32B key]
     /// [device name]`. The message id names the stream.
     fn open_audio(&mut self, id: u32, rest: &[u8]) {
@@ -630,9 +618,12 @@ impl<O: Outside> Host<O> {
             eprintln!("livi: create audio 0x{id:x} FAILED");
             return;
         };
-        let speaker = Arc::new(speaker);
+        if self.visualizer_enabled {
+            speaker.set_visualizer_enabled(true);
+        }
+        let speaker = Output::new(speaker);
 
-        // bit1 says the main process feeds this stream, so no ports are bound
+        // bit1: the main process feeds this stream.
         let fed = rest[11] & 2 != 0;
         let active = Arc::new(AtomicBool::new(false));
         let feed = AudioFeed::<O> {
@@ -650,13 +641,39 @@ impl<O: Outside> Host<O> {
             }
         };
 
-        if self.visualizer_enabled {
-            speaker.set_visualizer_enabled(true);
-        }
-        self.audio.borrow_mut().insert(id, AudioStream { speaker, active, _ears: ears });
+        self.audio
+            .borrow_mut()
+            .insert(id, AudioStream { speaker, cfg, level: None, active, _ears: ears });
         let mut ports = data_port.to_le_bytes().to_vec();
         ports.extend_from_slice(&control_port.to_le_bytes());
         self.wire.reply(REPLY_AUDIO_PORTS, id, &ports);
+    }
+
+    /// The device name, empty for the system's default. A running pipeline cannot change its
+    /// sink.
+    fn set_audio_output(&mut self, rest: &[u8]) {
+        let device = match core::str::from_utf8(rest) {
+            Ok("") | Err(_) => None,
+            Ok(name) => Some(name.to_owned()),
+        };
+        for (id, a) in self.audio.borrow_mut().iter_mut() {
+            if a.cfg.device == device {
+                continue;
+            }
+            let before = std::mem::replace(&mut a.cfg.device, device.clone());
+            let Some(speaker) = self.outside.create_speaker(&a.cfg) else {
+                eprintln!("livi: audio 0x{id:x} cannot move to {device:?}, it stays");
+                a.cfg.device = before;
+                continue;
+            };
+            if let Some(level) = a.level {
+                speaker.set_volume(level, 0);
+            }
+            if self.visualizer_enabled {
+                speaker.set_visualizer_enabled(true);
+            }
+            a.speaker.replace(speaker);
+        }
     }
 
     /// `[1B codec][1B payloadType][4B sampleRate][1B channels][4B bitrate]
@@ -725,31 +742,31 @@ impl<O: Outside> Host<O> {
         }
     }
 
-    /// Toggles the tap on every audio stream.
     fn set_visualizer_enabled(&mut self, on: bool) {
         self.visualizer_enabled = on;
+        self.spectrum.clear();
         for a in self.audio.borrow().values() {
-            a.speaker.set_visualizer_enabled(on);
+            a.speaker.get().set_visualizer_enabled(on);
         }
     }
 
-    /// Drains each stream up on the main loop, rate ahead of the samples. Empty
-    /// streams send nothing.
-    pub fn pump_visualizer(&self) {
+    /// The reply carries one f32 per band.
+    pub fn pump_visualizer(&mut self) {
         if !self.visualizer_enabled {
             return;
         }
         for (id, a) in self.audio.borrow().iter() {
-            if let Some((samples, rate)) = a.speaker.take_visualizer() {
-                let mut payload = rate.to_le_bytes().to_vec();
-                payload.extend_from_slice(&samples);
-                self.wire.reply(REPLY_VISUALIZER, *id, &payload);
+            if let Some((samples, rate)) = a.speaker.get().take_visualizer() {
+                self.spectrum.push(*id, rate, &samples);
             }
+        }
+        if let Some(bands) = self.spectrum.pump() {
+            let payload: Vec<u8> = bands.iter().flat_map(|b| b.to_le_bytes()).collect();
+            self.wire.reply(REPLY_VISUALIZER, 0, &payload);
         }
     }
 
-    /// What every receiver saw in the last window. Reading it starts the
-    /// counters over.
+    /// Reading starts the counters over.
     pub fn take_stats(&self) -> Vec<String> {
         let mut lines = Vec::new();
         for r in self.receivers.values() {
@@ -797,7 +814,6 @@ mod tests {
         gamma: Option<[f64; 5]>,
     }
 
-    /// A plane that writes down what it was told to do.
     #[derive(Default, Clone)]
     struct FakePlane(Rc<RefCell<PlaneLog>>);
 
@@ -845,7 +861,6 @@ mod tests {
         visualizer: Vec<u8>,
     }
 
-    /// A pipeline that writes down what it was fed.
     #[derive(Default, Clone)]
     struct FakeSpeaker(Arc<std::sync::Mutex<SpeakerLog>>);
 
@@ -871,7 +886,6 @@ mod tests {
         }
     }
 
-    /// A capture chain that says when it was dropped.
     struct FakeUplink(Rc<RefCell<usize>>);
 
     impl Drop for FakeUplink {
@@ -880,7 +894,6 @@ mod tests {
         }
     }
 
-    /// A microphone tap that says when it was dropped.
     struct FakeTap(Rc<RefCell<usize>>);
 
     impl Drop for FakeTap {
@@ -917,7 +930,7 @@ mod tests {
     #[derive(Default)]
     struct World {
         planes: Vec<FakePlane>,
-        codecs: Vec<(String, Vec<u8>)>,
+        codecs: Vec<(u32, String, Vec<u8>)>,
         sinks: Vec<SharedSink>,
         keys: Vec<[u8; 32]>,
         speakers: Vec<FakeSpeaker>,
@@ -943,7 +956,6 @@ mod tests {
 
     type SharedMediaSink = Rc<RefCell<Box<dyn MediaSink>>>;
 
-    /// The world the host talks to, and the test's handle on it.
     #[derive(Default, Clone)]
     struct Fake(Rc<RefCell<World>>);
 
@@ -964,13 +976,13 @@ mod tests {
             Some(FakeTap(w.taps_dropped.clone()))
         }
 
-        fn create_plane(&self, codec: &str, codec_data: &[u8]) -> Option<FakePlane> {
+        fn create_plane(&self, id: u32, codec: &str, codec_data: &[u8]) -> Option<FakePlane> {
             if self.0.borrow().refuse_plane {
                 return None;
             }
             let plane = FakePlane::default();
             let mut w = self.0.borrow_mut();
-            w.codecs.push((codec.to_owned(), codec_data.to_vec()));
+            w.codecs.push((id, codec.to_owned(), codec_data.to_vec()));
             w.planes.push(plane.clone());
             Some(plane)
         }
@@ -1053,14 +1065,11 @@ mod tests {
     }
 
     type Reply = (u8, u32, Vec<u8>);
-    /// What the fake wrote down of one uplink: payload type, rate, channels,
-    /// bitrate, frame length, port, phone and device.
+    /// Payload type, rate, channels, bitrate, frame length, port, phone and device.
     type OpenedUplink = (u8, u32, u8, u32, u32, u16, String, Option<String>);
-    /// What the fake wrote down of one audio stream: codec, payload type, rate,
-    /// channels, buffer depth, realtime and device.
+    /// Codec, payload type, rate, channels, buffer depth, realtime and device.
     type OpenedAudio = (AudioCodec, u8, u32, u8, u32, bool, Option<String>);
 
-    /// Collects the replies that would go down the socket.
     #[derive(Default, Clone)]
     struct Sent(Arc<std::sync::Mutex<Vec<Reply>>>);
 
@@ -1129,7 +1138,6 @@ mod tests {
             }
         }
 
-        /// PCM, 48 kHz stereo, no key. Bit1 of the flags says the main process feeds it.
         fn audio_body(fed: bool) -> Vec<u8> {
             let mut v = vec![3u8, 0];
             v.extend_from_slice(&48_000u32.to_le_bytes());
@@ -1331,7 +1339,6 @@ mod tests {
             self.sent.0.lock().unwrap().clone()
         }
 
-        /// Opens a receiver on `recv_id` for `plane_id` and makes it the feeder.
         fn feeder(&mut self, recv_id: u32, plane_id: u32, cluster: bool) {
             self.send(OP_LISTEN, recv_id, &listen_body(plane_id, cluster, 1));
             self.send(OP_SET_ACTIVE, recv_id, &[1]);
@@ -1345,7 +1352,7 @@ mod tests {
         f.send(OP_CREATE, MAIN_PLANE, &create_body("h264", &[9, 9]));
         f.send(OP_DATA, MAIN_PLANE, &[1, 2, 3]);
 
-        assert_eq!(f.world.0.borrow().codecs, vec![("h264".to_owned(), vec![9, 9])]);
+        assert_eq!(f.world.0.borrow().codecs, vec![(MAIN_PLANE, "h264".to_owned(), vec![9, 9])]);
         assert_eq!(f.plane(0).started(), 1);
         assert_eq!(f.plane(0).pushed(), vec![vec![1, 2, 3]]);
     }
@@ -1593,7 +1600,6 @@ mod tests {
 
         f.send(OP_SET_ACTIVE, 42, &[1]);
 
-        // the cached GOP is not replayed, and deltas are dropped until a keyframe arrives
         assert!(f.plane(0).pushed().is_empty());
         f.frame_in(0, &nal(DELTA, 3));
         assert!(f.plane(0).pushed().is_empty());
@@ -1844,7 +1850,6 @@ mod tests {
         assert_eq!(f.speaker(0).pushed(), vec![vec![1]]);
     }
 
-    /// A stream the main process feeds, which binds no ports.
     fn fed_body() -> Vec<u8> {
         let mut v = audio_body(3, false, "");
         v[11] |= 2;
@@ -1917,6 +1922,47 @@ mod tests {
         assert_eq!(f.speaker(0).volume(), None);
     }
 
+    #[test]
+    fn a_new_output_gives_the_stream_a_new_pipeline_at_its_level() {
+        let mut f = Fixture::new();
+        f.send(OP_AUDIO_OPEN, MUSIC, &audio_body(0, false, "speakers"));
+        f.send(OP_AUDIO_VOLUME, MUSIC, &0.25f64.to_le_bytes());
+        f.send(OP_AUDIO_ACTIVE, MUSIC, &[1]);
+
+        f.send(OP_AUDIO_OUTPUT, 0, b"headphones");
+        f.audio_sink(0).borrow_mut().on_rtp(&[7], 0);
+
+        assert_eq!(f.world.0.borrow().audio_cfgs[1].6.as_deref(), Some("headphones"));
+        assert_eq!((f.speaker(1).volume(), f.speaker(1).ramp_ms()), (Some(0.25), Some(0)));
+        assert_eq!(f.speaker(1).pushed(), vec![vec![7]]);
+        assert!(f.speaker(0).pushed().is_empty());
+    }
+
+    #[test]
+    fn a_stream_already_on_the_output_keeps_its_pipeline() {
+        let mut f = Fixture::new();
+        f.send(OP_AUDIO_OPEN, MUSIC, &audio_body(0, false, ""));
+
+        f.send(OP_AUDIO_OUTPUT, 0, b"");
+
+        assert_eq!(f.world.0.borrow().speakers.len(), 1);
+    }
+
+    #[test]
+    fn a_stream_the_new_output_refuses_plays_on_where_it_was() {
+        let mut f = Fixture::new();
+        f.send(OP_AUDIO_OPEN, MUSIC, &fed_body());
+        f.send(OP_AUDIO_ACTIVE, MUSIC, &[1]);
+
+        f.world.0.borrow_mut().refuse_speaker = true;
+        f.send(OP_AUDIO_OUTPUT, 0, b"gone");
+        f.world.0.borrow_mut().refuse_speaker = false;
+        f.send(OP_AUDIO_DATA, MUSIC, &[1]);
+
+        assert_eq!(f.world.0.borrow().speakers.len(), 1);
+        assert_eq!(f.speaker(0).pushed(), vec![vec![1]]);
+    }
+
     fn mic_body(codec: u8, phone: &str, device: &str) -> Vec<u8> {
         let mut v = vec![codec, 97];
         v.extend_from_slice(&24000u32.to_le_bytes());
@@ -1954,17 +2000,29 @@ mod tests {
     }
 
     #[test]
-    fn pump_sends_each_stream_its_samples_with_rate_and_channels_while_on() {
+    fn pump_sends_the_bands_of_every_stream_summed_while_on() {
         let mut f = Fixture::new();
         f.send(OP_AUDIO_OPEN, MUSIC, &audio_body(0, false, ""));
+        f.send(OP_AUDIO_OPEN, MUSIC + 1, &audio_body(0, false, ""));
         f.send(OP_VISUALIZER, 0, &[1]);
-        f.speaker(0).feed_visualizer(&[5, 6]);
+        let loud: Vec<u8> = (0..8192)
+            .flat_map(|i| {
+                let phase = 2.0 * std::f32::consts::PI * 22_000.0 * i as f32 / 48_000.0;
+                ((phase.sin() * 16000.0) as i16).to_le_bytes()
+            })
+            .collect();
+        f.speaker(0).feed_visualizer(&loud);
+        f.speaker(1).feed_visualizer(&loud);
 
         f.host.pump_visualizer();
 
-        let mut want = 48000u32.to_le_bytes().to_vec();
-        want.extend_from_slice(&[5, 6]);
-        assert_eq!(f.replies().last(), Some(&(REPLY_VISUALIZER, MUSIC, want)));
+        let spectra: Vec<_> =
+            f.replies().into_iter().filter(|(op, _, _)| *op == REPLY_VISUALIZER).collect();
+        assert_eq!(spectra.len(), 1);
+        let (_, id, bands) = &spectra[0];
+        assert_eq!((*id, bands.len()), (0, spectrum::BANDS * 4));
+        let top = f32::from_le_bytes([bands[92], bands[93], bands[94], bands[95]]);
+        assert!(top > 0.5);
     }
 
     #[test]
@@ -1979,14 +2037,17 @@ mod tests {
     }
 
     #[test]
-    fn a_stream_with_no_samples_says_nothing_on_pump() {
+    fn a_quiet_tap_sends_one_empty_frame_and_then_nothing() {
         let mut f = Fixture::new();
         f.send(OP_AUDIO_OPEN, MUSIC, &audio_body(0, false, ""));
         f.send(OP_VISUALIZER, 0, &[1]);
 
         f.host.pump_visualizer();
+        f.host.pump_visualizer();
 
-        assert!(f.replies().iter().all(|(op, _, _)| *op != REPLY_VISUALIZER));
+        let spectra: Vec<_> =
+            f.replies().into_iter().filter(|(op, _, _)| *op == REPLY_VISUALIZER).collect();
+        assert_eq!(spectra, [(REPLY_VISUALIZER, 0, vec![0u8; spectrum::BANDS * 4])]);
     }
 
     const MIC: u32 = 0x7b00_0009;

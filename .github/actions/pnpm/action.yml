@@ -1,5 +1,5 @@
 name: 'Setup Node + pnpm'
-description: 'Setup Node and pnpm, configure store + cache dirs'
+description: 'Setup Node and pnpm, configure the store dir'
 
 inputs:
   node-version:
@@ -51,14 +51,12 @@ runs:
         set -euo pipefail
         pnpm config set store-dir "${{ inputs.pnpm-store-dir }}"
 
-    - name: Ensure cache dirs exist
+    - name: Ensure the store dir exists
       shell: bash
       run: |
         set -euo pipefail
         mkdir -p "${{ inputs.pnpm-store-dir }}"
-        mkdir -p .cache/electron .cache/electron-builder
-        mkdir -p node_modules/.vite node_modules/.cache || true
-        chmod -R a+rwx "${{ inputs.pnpm-store-dir }}" .cache node_modules/.vite node_modules/.cache || true
+        chmod -R a+rwx "${{ inputs.pnpm-store-dir }}" || true
 
     - name: Capture runtime versions
       id: versions

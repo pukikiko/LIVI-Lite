@@ -1,6 +1,3 @@
-// /tmp/cp-bt.sock: line-JSON RPC for MFi and device control, an event stream, and a raw
-// tunnel that carries an iAP2 session over CarPlay Wi-Fi.
-
 use std::io;
 use std::os::fd::OwnedFd;
 use std::os::unix::fs::PermissionsExt;
@@ -23,7 +20,6 @@ use crate::{AsyncAuth, events};
 
 pub const SOCK_PATH: &str = "/tmp/cp-bt.sock";
 
-/// Fan-out of JSON event lines to every connected `subscribe` client.
 #[derive(Clone, Default)]
 pub struct Broadcaster {
     subs: Arc<Mutex<Vec<mpsc::UnboundedSender<String>>>>,
@@ -42,7 +38,7 @@ impl Broadcaster {
         rx
     }
 
-    /// Resolves once there is a subscriber, since a line pushed before that reaches nobody.
+    /// A line pushed before the first subscriber reaches nobody.
     pub async fn subscribed(&self) {
         loop {
             let joined = self.joined.notified();
@@ -54,8 +50,7 @@ impl Broadcaster {
     }
 }
 
-/// BlueZ, once the adapter is up: where a phone's link is dropped, and the address a tunnelled
-/// session names. Wired CarPlay needs none of it, so the socket serves before it is there.
+/// Wired CarPlay needs none of it, so the socket serves before it is there.
 #[derive(Clone)]
 pub struct Bluez {
     pub bus: zbus::Connection,
@@ -68,25 +63,20 @@ pub struct LiviSockConfig {
     pub path: String,
     pub identity: Identity,
     pub cp: CpConfig,
-    /// Who drops a phone's link where there is no BlueZ to ask.
+    /// Used where there is no BlueZ.
     pub disconnect: Option<DropLink>,
-    /// Who pages phones where there is no BlueZ to page from.
+    /// Used where there is no BlueZ.
     pub targets: Option<PushTargets>,
-    /// Resolves the CarPlay config afresh for each tunnel session. The dongle's access point can
-    /// come up with a different MAC/SSID/channel than it had when the helper started, so a config
-    /// frozen at start would hand the phone a stale `device_identifier` that no longer matches the
-    /// one it joined over Bluetooth — and the phone drops the session. When set, this is asked
-    /// instead of `cp`.
+    /// Takes the place of `cp`. The access point can change its MAC, SSID and channel, and a
+    /// stale `device_identifier` makes the phone drop the session.
     pub cp_live: Option<CpFactory>,
 }
 
-/// Drops the link to one phone, named by its address.
 pub type DropLink = Arc<dyn Fn(String) -> Result<(), String> + Send + Sync>;
 
-/// Yields a freshly resolved CarPlay config, read from the live access point.
 pub type CpFactory = Arc<dyn Fn() -> CpConfig + Send + Sync>;
 
-/// Hands on the phones that may be paged, in paging order.
+/// In paging order.
 pub type PushTargets = Arc<dyn Fn(Vec<String>) -> Result<(), String> + Send + Sync>;
 
 pub async fn serve<A>(
@@ -160,7 +150,7 @@ where
     match verb {
         "subscribe" => run_subscriber(stream, bcast).await,
         "tunnel" => {
-            // "tunnel <cid> [btMac]" — the MAC is recognizable by its colons.
+            // "tunnel <cid> [btMac]", the MAC is told apart by its colons.
             let (cid, bt_mac) = match arg.rsplit_once(' ') {
                 Some((c, m)) if m.contains(':') => (c.trim(), m),
                 _ => (arg, ""),
@@ -254,8 +244,6 @@ where
             };
             reply(&mut stream, &json).await
         }
-        // Profiles are registered at startup and stay up; the toggles are accepted no-ops.
-        "set-cp" | "set-aa" => reply(&mut stream, "{\"ok\":true}").await,
         "location" => {
             let json = match state.vehicle().push_location(arg) {
                 Ok(()) => "{\"ok\":true}".to_string(),
@@ -348,8 +336,6 @@ fn run_tunnel<A>(
         LinkConfig { max_outgoing: 4, control_version: 2, zero_ack: true, ..LinkConfig::default() };
     let (channel, art_rx) = spawn_link(fd, link_cfg, true);
     let (tx, rx) = mpsc::channel(64);
-    // Read the access point's current MAC/SSID/channel now, so the phone hears the same
-    // accessory it just joined over Bluetooth rather than whatever was true at helper start.
     let cp = match &cfg.cp_live {
         Some(resolve) => resolve(),
         None => cfg.cp,
@@ -363,7 +349,6 @@ fn run_tunnel<A>(
     tokio::spawn(pump_artwork(art_rx, bcast, ident));
 }
 
-/// Forwards completed album artwork to the UI as base64 albumart events.
 pub async fn pump_artwork(
     mut art_rx: crate::driver::ArtworkRx,
     bcast: Broadcaster,
@@ -380,8 +365,7 @@ pub async fn pump_artwork(
 
 pub type SharedTag = Arc<Mutex<events::EventTag>>;
 
-/// Forwards bring-up telemetry to the UI: decodes incoming CSM into JSON and broadcasts it.
-/// `usb_udid` marks a wired session; every metadata event carries the phone's iAP2 identity.
+/// `usb_udid` marks a wired session.
 pub async fn pump_events_for(
     mut rx: mpsc::Receiver<BringupEvent>,
     bcast: Broadcaster,

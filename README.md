@@ -10,11 +10,12 @@ It is a standalone cross-platform head unit with a native, zero-copy GStreamer v
 
 > ## LIVI-Lite (this fork)
 >
-> This fork removes Electron entirely. The React/MUI renderer is replaced by a
-> small Rust + [Slint](https://slint.dev) UI (`native/livi-ui`, software renderer),
-> and the service/projection core runs on plain **Node.js** with a thin Electron-API
-> shim (`src/node/platform/electron-shim.ts`) - no Chromium anywhere. Core and UI
-> talk over a newline-delimited JSON Unix socket (`src/node/ui/UiServer.ts`).
+> This fork removes Electron entirely. Upstream's Rust core (the `livi-core`
+> binary in `native/livi-helperd`) is the service/projection backend, and the
+> React/MUI renderer is replaced by a small Rust + [Slint](https://slint.dev) UI
+> (`native/livi-ui`, software renderer). Core and UI talk over livi-core's
+> framed-JSON Unix socket (`$XDG_RUNTIME_DIR/livi/core.sock`); the legacy Node
+> service layer and its Electron shim are gone.
 >
 > The video path was already Electron-free: `livi-gst-host` presents decoded
 > DMA-BUF planes directly to `livi-compositor` via `waylandsink`. The Slint window
@@ -26,29 +27,24 @@ It is a standalone cross-platform head unit with a native, zero-copy GStreamer v
 >
 > ```sh
 > pnpm install --ignore-scripts
-> pnpm run build            # bundles out/core/livi-core.cjs + builds livi-ui
-> pnpm run build:native     # compositor, gst host, helperd (needs Rust + GStreamer deps)
+> pnpm run build            # livi-core, compositor, gst-host, helperd and livi-ui
 > ```
 >
-> `electron` remains a dev-only dependency for TypeScript types of the legacy
-> service layer; it is never bundled or loaded at runtime.
->
-> **Run (dev)**
+> **Run**
 >
 > ```sh
-> node out/core/livi-core.cjs          # core only
-> out/ui/livi-ui                        # UI + compositor + core (needs pnpm run build:native)
-> LIVI_NO_COMPOSITOR=1 native/livi-ui/target/release/livi-ui   # plain window on the host desktop
+> pnpm start                # livi-core starts the compositor and the UI
+> LIVI_NO_UI=1 pnpm start   # core only; run out/ui/livi-ui yourself against it
+> out/ui/livi-ui            # UI only, connects to a running core
 > ```
 >
-> Do not run the UI with `sudo`: the core socket lives in the user's
-> `XDG_RUNTIME_DIR` and `node` must be on `PATH`. `out/ui/livi-ui` finds the
-> compositor next to it; a dev-tree build (`native/livi-ui/target/release/livi-ui`)
-> finds `out/compositor/livi-compositor` as well.
+> Without a DRM device the compositor start is skipped and the UI opens as a
+> plain window on the desktop. Do not run LIVI with `sudo`: the core socket
+> lives in the user's `XDG_RUNTIME_DIR`.
 >
 > Current limitations of the fork: dash/aux secondary windows, telemetry
-> dashboards and the custom-page iframe are not ported yet; device/settings/media
-> functionality is present. The updater and the original AppImage installer are
+> dashboards and the custom-page iframe are not ported yet; devices, settings,
+> media and projection are. The updater and the original AppImage installer are
 > not wired for the new layout.
 
 
@@ -328,9 +324,9 @@ After this, the app will launch normally and future updates will work without ad
 Make sure the following packages and tools are installed on your system before building. The lists below cover both building and running, including everything native CarPlay needs:
 
 - **Node.js 24.x** (with `corepack` for `pnpm`)
-- **Rust** (stable, ≥ 1.88 — via [rustup](https://rustup.rs)): builds everything native — `livi-helperd`, `livi-compositor`, and the addons `livi-crypto`, `livi-gst-video` and `livi-gst-host`.
+- **Rust** (via [rustup](https://rustup.rs), which installs the version pinned in `rust-toolchain.toml`): builds everything native, that is `livi-helperd`, `livi-compositor` and `livi-gst-host`.
 - **build-essential** (Linux: includes `gcc`, `g++`, `make`, etc.)
-- **libgstreamer1.0-dev** + **libgstreamer-plugins-base1.0-dev** (required to build the `livi-gst-video` addon and the `livi-gst-host` binary)
+- **libgstreamer1.0-dev** + **libgstreamer-plugins-base1.0-dev** (required to build the `livi-gst-host` binary)
 - **pkg-config**, **cmake** (AWS-LC build), **libwayland-dev** + **libxkbcommon-dev** (Linux only: the embedded Wayland compositor links both)
 - runtime packages for native CarPlay and wireless Android Auto: **bluez**, **libspa-0.2-bluetooth**, **hostapd**, **dnsmasq-base**, **iw**, **rfkill**, **avahi-daemon**, **avahi-utils**, **pulseaudio-utils**
 
@@ -370,12 +366,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 
 Fedora has no `rfkill` package, the command comes with `util-linux`. `libspa-0.2-bluetooth` is a Debian name too: it holds PipeWire's Bluetooth plugin, which Fedora ships inside `pipewire-libs`. Wireless Android Auto needs that plugin because the phone will only start a session over an HFP connection, and PipeWire is what puts HFP into the adapter's service record. LIVI's package check probes for the plugin's directory rather than a package name, so it reports the gap on any distro. Everything else, including wireless CarPlay, works the same.
 
-On macOS, the `livi-gst-video` addon links against the **GStreamer.framework**. Install
-both the runtime and development packages (matching versions) from
-[gstreamer.freedesktop.org](https://gstreamer.freedesktop.org/download/#macos)
-before building. The cargo build discovers it via `pkg-config` under
-`/Library/Frameworks/GStreamer.framework`; besides that, macOS needs only
-Node.js, pnpm and Rust.
+On macOS, building needs only Node.js, pnpm and Rust.
 
 ### Clone & Build
 

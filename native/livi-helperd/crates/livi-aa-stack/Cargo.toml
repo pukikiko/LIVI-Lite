@@ -1,0 +1,18 @@
+[package]
+name = "livi-aa-stack"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+livi-core-proto = { path = "../livi-core-proto" }
+livi-session-io = { path = "../livi-session-io" }
+prost = "0.14.4"
+serde_json = "1.0.151"
+tokio = { version = "1.53.2", features = ["rt", "macros", "net", "io-util", "sync", "time"] }
+
+[build-dependencies]
+prost-build = "0.14.4"
+protox = "0.9.1"
+
+[dev-dependencies]
+tokio = { version = "1.53.2", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "test-util"] }

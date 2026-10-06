@@ -1,14 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ----------------------------------------
-# LIVI Installer & Shortcut Creator (desktop session)
-# ----------------------------------------
-# For a host that already has a desktop session, so it adds an autostart entry,
-# a desktop shortcut and an application entry. Everything it shares with the
-# headless installer lives in scripts/install/common.sh.
-#
-# Re-runnable.
+# For a host with a desktop session. Re-runnable.
 
 LIVI_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../common.sh"
 if [ ! -f "$LIVI_LIB" ]; then
@@ -27,13 +20,12 @@ APPIMAGE_DIR="$(dirname "$APPIMAGE_PATH")"
 echo "→ Creating target directory: $APPIMAGE_DIR"
 mkdir -p "$APPIMAGE_DIR"
 
-echo "→ Checking for required tools: curl, xdg-user-dir, pkexec"
-for tool in curl xdg-user-dir pkexec; do
+echo "→ Checking for required tools: curl, xdg-user-dir"
+for tool in curl xdg-user-dir; do
   if ! command -v "$tool" >/dev/null 2>&1; then
     echo "   $tool not found, installing…"
     case "$tool" in
       xdg-user-dir) livi_pm_install xdg-user-dirs ;;
-      pkexec)       [ "$(livi_pm)" = dnf ] && livi_pm_install polkit || livi_pm_install pkexec ;;
       *)            livi_pm_install "$tool" ;;
     esac
   else
@@ -73,7 +65,6 @@ livi_fetch_appimage "$APPIMAGE_PATH" "$APPIMAGE_SRC"
 echo "   Download complete: $APPIMAGE_PATH"
 
 # Everything privileged is granted here, while the installer already holds sudo.
-# The app keeps its pkexec dialogs as a fallback and skips them once these exist.
 LIVI_EXTRACT_DIR="$(mktemp -d)"
 trap "rm -rf '$LIVI_EXTRACT_DIR'" EXIT
 
@@ -86,24 +77,14 @@ SUDOERS_TEMPLATE="$(livi_fetch_template "$APPIMAGE_PATH" "$LIVI_SUDOERS_TEMPLATE
   echo "Error: cannot obtain $LIVI_SUDOERS_TEMPLATE" >&2
   exit 1
 }
-AP_UNIT_TEMPLATE="$(livi_fetch_template "$APPIMAGE_PATH" "$LIVI_AP_UNIT_TEMPLATE")" || {
-  echo "Error: cannot obtain $LIVI_AP_UNIT_TEMPLATE" >&2
-  exit 1
-}
-AP_SUDOERS_TEMPLATE="$(livi_fetch_template "$APPIMAGE_PATH" "$LIVI_AP_SUDOERS_TEMPLATE")" || {
-  echo "Error: cannot obtain $LIVI_AP_SUDOERS_TEMPLATE" >&2
-  exit 1
-}
 TOUCH_FILTER="$(livi_fetch_template "$APPIMAGE_PATH" "$LIVI_TOUCH_FILTER_TEMPLATE")" || {
   echo "Error: cannot obtain $LIVI_TOUCH_FILTER_TEMPLATE" >&2
   exit 1
 }
 
-# --- shared ---
 livi_install_touch_filter "$TOUCH_FILTER"
 livi_write_udev_rule "$UDEV_TEMPLATE"
 livi_write_sudoers "$SUDOERS_TEMPLATE"
-livi_write_wifi_ap_unit "$AP_UNIT_TEMPLATE" "$AP_SUDOERS_TEMPLATE"
 livi_write_regdom
 livi_install_time_helper
 livi_disable_wifi_powersave
@@ -113,14 +94,10 @@ livi_apply_mfi
 livi_apply_splash
 livi_apply_hdmi_pr "$APPIMAGE_PATH"
 
-# --- desktop only ---
-livi_install_gvfs_guard
-
 echo "→ Creating autostart entry"
 AUTOSTART_DIR="$USER_HOME/.config/autostart"
 mkdir -p "$AUTOSTART_DIR"
 
-# No shell log redirect: the app writes its own rotating logs to userData/log/.
 cat > "$AUTOSTART_DIR/LIVI.desktop" <<EOF
 [Desktop Entry]
 Type=Application
