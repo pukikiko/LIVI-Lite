@@ -1,7 +1,7 @@
 //! livi-compositor, a nested Wayland compositor for LIVI.
 //!
-//! One screen per role (LIVI_SCREENS), each a host window with a transparent
-//! Electron UI on top and tagged GStreamer waylandsink video planes below,
+//! One screen per role (LIVI_SCREENS), each a host window with the native UI
+//! plane at the bottom and tagged GStreamer waylandsink video planes above it,
 //! composited zero-copy. The host drives video placement/crop/visibility over
 //! a control socket (LIVI_COMPOSITOR_CTRL).
 

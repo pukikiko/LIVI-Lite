@@ -1,0 +1,197 @@
+// Main window shell: original LIVI layout, an icon-only navigation rail on the
+// left (90px, clock on top, hairline separator) plus the routed page.
+
+import { Theme } from "theme.slint";
+import {
+    App,
+    DeviceRow,
+    MediaState,
+} from "common.slint";
+import {
+    IconDevices,
+    IconMedia,
+    IconProjection,
+    IconSettings,
+    IconWifi,
+    IconWifiOff,
+} from "icons.slint";
+import { ProjectionSurface } from "projection.slint";
+import { DevicesPage } from "devices.slint";
+import { MediaPage } from "media.slint";
+import { SettingsPage } from "settings.slint";
+
+export { App, DeviceRow, MediaState } from "common.slint";
+
+// One rail tab: icon-only, like the original NavRail Tabs (white active,
+// grey idle, primary on hover/press).
+component NavTab inherits Rectangle {
+    out property <bool> hovered: ta.has-hover;
+    out property <bool> pressed: ta.pressed;
+    callback clicked;
+
+    HorizontalLayout {
+        x: 0;
+        y: 0;
+        width: 100%;
+        height: 100%;
+        alignment: center;
+        cross-axis-alignment: center;
+        @children
+    }
+
+    ta := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+component Shell inherits Rectangle {
+    background: Theme.background;
+
+    // Equal-height tabs fill the rail below the clock block.
+    property <length> tab-h: max(56px, (self.height - 16px - 48px - 14px - 22px) / 4);
+
+    HorizontalLayout {
+        x: 0;
+        y: 0;
+        width: 100%;
+        height: 100%;
+        spacing: 0px;
+
+        // ---------------------------------------------------------- nav rail
+        Rectangle {
+            width: Theme.nav-rail-width;
+            background: Theme.background;
+
+            // 1px separator, as in #nav-root.
+            Rectangle {
+                x: parent.width - 1px;
+                width: 1px;
+                height: 100%;
+                background: Theme.divider;
+            }
+
+            VerticalLayout {
+                x: 0;
+                y: 0;
+                width: 100%;
+                height: 100%;
+                alignment: start;
+                padding-top: 16px;
+                padding-bottom: 22px;
+                spacing: 0px;
+
+                // Clock + Wi-Fi, like the AppLayout nav header.
+                VerticalLayout {
+                    height: 48px;
+                    spacing: 4px;
+                    alignment: center;
+                    Text {
+                        text: App.time-text;
+                        color: Theme.text-primary;
+                        font-family: Theme.font-family;
+                        font-size: 24px;
+                        font-weight: 400;
+                        horizontal-alignment: center;
+                    }
+                    if App.core-connected && App.link-text != "" : IconWifi {
+                        width: 16px;
+                        height: 16px;
+                        color: Theme.text-secondary;
+                    }
+                    if !App.core-connected : IconWifiOff {
+                        width: 16px;
+                        height: 16px;
+                        color: Theme.text-disabled;
+                    }
+                }
+
+                Rectangle {
+                    height: 14px;
+                }
+
+                // Tabs share the remaining height equally, like the original
+                // full-width vertical Tabs.
+                projection-tab := NavTab {
+                    height: root.tab-h;
+                    clicked => {
+                        App.home();
+                    }
+                    IconProjection {
+                        width: Theme.nav-icon-size;
+                        height: Theme.nav-icon-size;
+                        color: App.projection-active
+                            ? (App.streaming ? Theme.highlight : Theme.text-primary)
+                            : Theme.text-disabled;
+                        opacity: App.projection-active && !App.streaming
+                            ? App.breathe-opacity
+                            : 1.0;
+                    }
+                }
+
+                devices-tab := NavTab {
+                    height: root.tab-h;
+                    clicked => {
+                        App.nav(1);
+                    }
+                    IconDevices {
+                        width: Theme.nav-icon-size;
+                        height: Theme.nav-icon-size;
+                        color: devices-tab.hovered || devices-tab.pressed
+                            ? Theme.primary
+                            : (App.page == 1 ? Theme.text-primary : Theme.nav-idle);
+                    }
+                }
+
+                media-tab := NavTab {
+                    height: root.tab-h;
+                    clicked => {
+                        App.nav(2);
+                    }
+                    IconMedia {
+                        width: Theme.nav-icon-size;
+                        height: Theme.nav-icon-size;
+                        color: media-tab.hovered || media-tab.pressed
+                            ? Theme.primary
+                            : (App.page == 2 ? Theme.text-primary : Theme.nav-idle);
+                    }
+                }
+
+                settings-tab := NavTab {
+                    height: root.tab-h;
+                    clicked => {
+                        App.nav(3);
+                    }
+                    IconSettings {
+                        width: Theme.nav-icon-size;
+                        height: Theme.nav-icon-size;
+                        color: settings-tab.hovered || settings-tab.pressed
+                            ? Theme.primary
+                            : (App.page == 3 ? Theme.text-primary : Theme.nav-idle);
+                    }
+                }
+            }
+        }
+
+        // ------------------------------------------------------------ content
+        Rectangle {
+            horizontal-stretch: 1;
+
+            if App.page == 1 : DevicesPage { }
+            if App.page == 2 : MediaPage { }
+            if App.page == 3 : SettingsPage { }
+        }
+    }
+}
+
+export component MainWindow inherits Window {
+    // The compositor routes UI surfaces by their "livi:<role>" title.
+    title: "livi:main";
+    width: 1280px;
+    height: 720px;
+    background: Theme.background;
+
+    if App.page == 0 : ProjectionSurface { }
+    if App.page != 0 : Shell { }
+}

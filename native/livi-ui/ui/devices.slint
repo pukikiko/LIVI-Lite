@@ -1,0 +1,288 @@
+// Devices page: one 52px row per paired phone, following the original
+// SettingsDeviceRow composition (protocol marker, name, transport badge,
+// battery, signal, status dot, forget), plus the session actions.
+
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { App } from "common.slint";
+import { Card, Header, LiviButton, LiviIconButton, Row, RowIcon, RowLabel } from "controls.slint";
+import {
+    IconAndroid,
+    IconAutoConnect,
+    IconBluetooth,
+    IconBolt,
+    IconCable,
+    IconCar,
+    IconClose,
+    IconDevices,
+    IconRefresh,
+    IconWifi,
+} from "icons.slint";
+
+// Draftsman's battery: outline, fill and digits, like the original row.
+component BatteryIndicator inherits Rectangle {
+    in property <float> level: 0;
+    in property <bool> charging: false;
+    width: 52px;
+    height: 24px;
+
+    property <color> fill-color: level < 10 ? #ff3b30 : (level < 20 ? #ffcc00 : #34c759);
+
+    Rectangle {
+        x: 1px;
+        y: 3.5px;
+        width: 45px;
+        height: 17px;
+        border-radius: 4px;
+        border-width: 2px;
+        border-color: Theme.text-secondary;
+        background: transparent;
+    }
+    Rectangle {
+        x: 47.5px;
+        y: 8.5px;
+        width: 3px;
+        height: 7px;
+        border-radius: 1.5px;
+        background: Theme.text-secondary;
+    }
+    Rectangle {
+        x: 3px;
+        y: 5.5px;
+        width: max(3px, 41px * clamp(root.level / 100, 0, 1));
+        height: 13px;
+        border-radius: 2px;
+        background: root.fill-color;
+        opacity: 0.9;
+    }
+    Text {
+        x: 8px;
+        width: 35px;
+        height: 100%;
+        text: "" + round(root.level);
+        color: Theme.text-primary;
+        font-family: Theme.font-family;
+        font-size: 11px;
+        font-weight: 700;
+        horizontal-alignment: right;
+        vertical-alignment: center;
+    }
+    if (root.charging) : IconBolt {
+        x: 3px;
+        y: 6px;
+        width: 12px;
+        height: 12px;
+        color: Theme.text-primary;
+    }
+}
+
+component SignalBars inherits Rectangle {
+    in property <float> level: 0;
+    width: 24px;
+    height: 14px;
+
+    HorizontalLayout {
+        x: 0;
+        y: 0;
+        width: 100%;
+        height: 100%;
+        alignment: end;
+        cross-axis-alignment: end;
+        spacing: 2px;
+
+        for i in 5 : Rectangle {
+            width: 3px;
+            height: i == 0 ? 4px : (i == 1 ? 7px : (i == 2 ? 9px : (i == 3 ? 12px : 14px)));
+            border-radius: 1px;
+            background: i < round(root.level) ? Theme.text-primary : Theme.text-disabled;
+            opacity: i < round(root.level) ? 1.0 : 0.35;
+        }
+    }
+}
+
+component StatusDot inherits Rectangle {
+    in property <string> status;
+    width: 12px;
+    height: 12px;
+    border-radius: 6px;
+    background: status == "active"
+        ? Theme.highlight
+        : (status == "available" ? Theme.text-primary : transparent);
+    border-width: status == "offline" ? 2px : 0px;
+    border-color: Theme.text-disabled;
+}
+
+component TransportBadge inherits Rectangle {
+    in property <string> transport;
+    width: 24px;
+    height: 24px;
+
+    if (transport == "usb") : IconCable {
+        width: 20px;
+        height: 20px;
+        x: 2px;
+        y: 2px;
+        color: Theme.text-secondary;
+    }
+    if (transport == "wifi") : IconWifi {
+        width: 20px;
+        height: 20px;
+        x: 2px;
+        y: 2px;
+        color: Theme.text-secondary;
+    }
+}
+
+export component DevicesPage inherits Rectangle {
+    background: Theme.background;
+
+    VerticalLayout {
+        x: 0;
+        y: 0;
+        width: 100%;
+        height: 100%;
+        alignment: start;
+        padding-top: 18px;
+        padding-bottom: 18px;
+        padding-left: 24px;
+        padding-right: 24px;
+        spacing: 10px;
+
+        Header {
+            title: "Devices";
+        }
+
+        ScrollView {
+            vertical-stretch: 1;
+            vertical-scrollbar-policy: ScrollBarPolicy.always-off;
+
+            VerticalLayout {
+                spacing: 14px;
+
+                Card {
+                    for device[i] in App.devices : Row {
+                        divider: i < App.devices.length - 1;
+                        opacity: device.status == "offline" ? 0.45 : 1.0;
+
+                        RowIcon {
+                            if (device.protocol == "carplay") : IconDevices {
+                                width: 100%;
+                                height: 100%;
+                                color: device.status == "active" ? Theme.highlight : Theme.text-secondary;
+                            }
+                            if (device.protocol == "androidauto") : IconAndroid {
+                                width: 100%;
+                                height: 100%;
+                                color: device.status == "active" ? Theme.highlight : Theme.text-secondary;
+                            }
+                            if (device.protocol != "carplay" && device.protocol != "androidauto") : IconCar {
+                                width: 100%;
+                                height: 100%;
+                                color: device.status == "active" ? Theme.highlight : Theme.text-secondary;
+                            }
+                        }
+
+                        RowLabel {
+                            text: device.name;
+                            color: Theme.text-primary;
+                        }
+
+                        HorizontalLayout {
+                            spacing: 12px;
+                            cross-axis-alignment: center;
+
+                            TransportBadge {
+                                transport: device.transport;
+                            }
+                            if (device.battery-level >= 0) : BatteryIndicator {
+                                level: device.battery-level;
+                                charging: device.battery-charging;
+                            }
+                            if (device.signal >= 0) : SignalBars {
+                                level: device.signal;
+                            }
+                            StatusDot {
+                                status: device.status;
+                            }
+                            if (device.can-connect) : LiviIconButton {
+                                width: 36px;
+                                height: 36px;
+                                clicked => {
+                                    App.connect-device(device.id);
+                                }
+                                IconBluetooth {
+                                    width: 20px;
+                                    height: 20px;
+                                    color: Theme.text-secondary;
+                                }
+                            }
+                            if (device.can-forget) : LiviIconButton {
+                                width: 36px;
+                                height: 36px;
+                                clicked => {
+                                    App.forget-device(device.id);
+                                }
+                                IconClose {
+                                    width: 20px;
+                                    height: 20px;
+                                    color: Theme.text-secondary;
+                                }
+                            }
+                        }
+                    }
+
+                    if (App.devices.length == 0) : Text {
+                        text: "No paired devices";
+                        color: Theme.text-secondary;
+                        font-family: Theme.font-family;
+                        font-size: 16px;
+                        height: 72px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                Card {
+                    Row {
+                        RowIcon {
+                            IconAutoConnect {
+                                width: 100%;
+                                height: 100%;
+                                color: Theme.text-secondary;
+                            }
+                        }
+                        RowLabel {
+                            text: "Cycle session";
+                        }
+                        LiviButton {
+                            text: "CYCLE";
+                            clicked => {
+                                App.cycle-session();
+                            }
+                        }
+                    }
+                    Row {
+                        divider: false;
+                        RowIcon {
+                            IconRefresh {
+                                width: 100%;
+                                height: 100%;
+                                color: Theme.text-secondary;
+                            }
+                        }
+                        RowLabel {
+                            text: "Refresh devices";
+                        }
+                        LiviButton {
+                            text: "REFRESH";
+                            outlined: true;
+                            clicked => {
+                                App.refresh-devices();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

@@ -80,4 +80,13 @@ if (only !== 'crypto') {
     join(root, 'native', 'livi-helperd', 'build', 'Release'),
     'livi-helperd'
   )
+
+  if (process.platform === 'linux') {
+    // Native UI (Slint) and the helper staged where the core resolves them:
+    // out/core/livi-core.cjs + out/ui/livi-ui + out/driver/livi-helperd.
+    const uiManifest = join(root, 'native', 'livi-ui', 'Cargo.toml')
+    const uiOut = cargoBuild(uiManifest, 'livi-ui')
+    place(join(uiOut, 'livi-ui'), join(root, 'out', 'ui'), 'livi-ui')
+    place(join(helperOut, 'livi-helperd'), join(root, 'out', 'driver'), 'livi-helperd')
+  }
 }

@@ -65,3 +65,12 @@ This application bundles the **Roboto** font.
 Roboto is licensed under the **SIL Open Font License 1.1 (OFL-1.1)**.
 
 https://github.com/googlefonts/roboto
+
+### Material Icons
+
+The native UI (`native/livi-ui`) embeds icon paths derived from **Material Symbols**
+(Material Design icons, via `@mui/icons-material`).
+
+Material Symbols are licensed under the **Apache License 2.0**.
+
+https://fonts.google.com/icons

@@ -1,0 +1,111 @@
+// Full-window touch surface. While the projection video plane is visible the
+// compositor draws it on top of this surface, and input still arrives here.
+// Idle state mirrors the original StatusOverlay: a large device icon on black.
+
+import { Theme } from "theme.slint";
+import { App } from "common.slint";
+import { IconProjection } from "icons.slint";
+
+export component ProjectionSurface inherits Rectangle {
+    background: Theme.background;
+
+    touch := TouchArea {
+        pointer-event(e) => {
+            App.pointer(
+                e.kind == PointerEventKind.down ? 0
+                    : e.kind == PointerEventKind.up ? 1
+                    : e.kind == PointerEventKind.move ? 2 : 3,
+                touch.mouse-x / 1px,
+                touch.mouse-y / 1px,
+                touch.width / 1px,
+                touch.height / 1px,
+            );
+        }
+    }
+
+    VerticalLayout {
+        x: 0;
+        y: 0;
+        width: 100%;
+        height: 100%;
+        alignment: start;
+        spacing: 0;
+
+        Rectangle {
+            height: root.height - 42px;
+
+            VerticalLayout {
+                x: 0;
+                y: 0;
+                width: 100%;
+                height: 100%;
+                alignment: center;
+                spacing: 16px;
+
+                IconProjection {
+                    width: 84px;
+                    height: 84px;
+                    cross-axis-self-alignment: center;
+                    color: Theme.text-primary;
+                    opacity: App.projection-active && !App.streaming ? App.breathe-opacity : 0.55;
+                }
+
+                Text {
+                    text: !App.core-connected ? "waiting for core" : App.status-message;
+                    color: Theme.text-secondary;
+                    font-family: Theme.font-family;
+                    font-size: 20px;
+                    horizontal-alignment: center;
+                }
+
+                if (App.core-connected && !App.projection-shown) : Text {
+                    text: "swipe up from the bottom edge, or right from the left edge, to return";
+                    color: Theme.text-disabled;
+                    font-family: Theme.font-family;
+                    font-size: 14px;
+                    horizontal-alignment: center;
+                }
+            }
+        }
+
+        // Compact live status strip, bottom right.
+        HorizontalLayout {
+            height: 42px;
+            padding-left: 20px;
+            padding-right: 20px;
+            padding-bottom: 14px;
+            spacing: 18px;
+
+            Text {
+                text: App.nav-text;
+                color: Theme.text-secondary;
+                font-family: Theme.font-family;
+                font-size: 15px;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                overflow: elide;
+            }
+            if (App.speed-text != "") : Text {
+                text: App.speed-text;
+                color: Theme.text-primary;
+                font-family: Theme.font-family;
+                font-size: 20px;
+                vertical-alignment: center;
+            }
+            if (App.link-text != "") : Text {
+                text: App.link-text;
+                color: Theme.text-secondary;
+                font-family: Theme.font-family;
+                font-size: 15px;
+                vertical-alignment: center;
+            }
+            if (App.update-text != "") : Text {
+                text: App.update-text;
+                color: Theme.primary;
+                font-family: Theme.font-family;
+                font-size: 14px;
+                vertical-alignment: center;
+            }
+        }
+    }
+}

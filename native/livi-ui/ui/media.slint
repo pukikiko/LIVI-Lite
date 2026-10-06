@@ -1,0 +1,228 @@
+// Now-playing page matching the original Media layout: text column on the
+// left, square artwork on the right, circular transport controls docked at the
+// bottom with an elapsed / remaining progress bar.
+
+import { Theme } from "theme.slint";
+import { App } from "common.slint";
+import { IconNext, IconPause, IconPlay, IconPrev } from "icons.slint";
+
+component MediaButton inherits Rectangle {
+    callback clicked;
+
+    width: 64px;
+    height: 64px;
+    border-radius: 32px;
+    background: btn.pressed || btn.has-hover ? Theme.control-surface-active : Theme.control-surface;
+    border-width: btn.pressed ? 3px : 0px;
+    border-color: Theme.primary;
+
+    HorizontalLayout {
+        x: 0;
+        y: 0;
+        width: 100%;
+        height: 100%;
+        alignment: center;
+        cross-axis-alignment: center;
+        @children
+    }
+
+    btn := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+export component MediaPage inherits Rectangle {
+    background: Theme.background;
+
+    property <length> art-size: min(300px, max(160px, self.height * 0.42));
+
+    VerticalLayout {
+        x: 0;
+        y: 0;
+        width: 100%;
+        height: 100%;
+        alignment: start;
+        padding-top: 20px;
+        padding-bottom: 16px;
+        padding-left: 24px;
+        padding-right: 24px;
+        spacing: 14px;
+
+        if (!App.media.available) : Text {
+            text: "No media session";
+            color: Theme.text-secondary;
+            font-family: Theme.font-family;
+            font-size: 18px;
+            height: root.height - 36px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+
+        if (App.media.available) : Rectangle {
+            height: root.height - 148px;
+
+            HorizontalLayout {
+                x: 0;
+                y: 0;
+                width: 100%;
+                height: 100%;
+                spacing: 28px;
+                cross-axis-alignment: center;
+
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    alignment: center;
+                    spacing: 8px;
+
+                    Text {
+                        visible: App.media.title != "";
+                        text: App.media.title;
+                        color: Theme.text-primary;
+                        font-family: Theme.font-family;
+                        font-size: 46px;
+                        font-weight: 800;
+                        letter-spacing: 0.2px;
+                        overflow: elide;
+                        horizontal-alignment: left;
+                    }
+                    Text {
+                        visible: App.media.artist != "";
+                        text: App.media.artist;
+                        color: Theme.text-primary;
+                        opacity: 0.9;
+                        font-family: Theme.font-family;
+                        font-size: 24px;
+                        overflow: elide;
+                    }
+                    Text {
+                        visible: App.media.album != "";
+                        text: App.media.album;
+                        color: Theme.text-primary;
+                        opacity: 0.7;
+                        font-family: Theme.font-family;
+                        font-size: 20px;
+                        overflow: elide;
+                    }
+                    Text {
+                        visible: App.media.app != "";
+                        text: App.media.app;
+                        color: Theme.text-primary;
+                        opacity: 0.55;
+                        font-family: Theme.font-family;
+                        font-size: 14px;
+                        overflow: elide;
+                    }
+                }
+
+                // Artwork tile: inset surface with a large radius.
+                Rectangle {
+                    width: root.art-size;
+                    height: root.art-size;
+                    border-radius: 34px;
+                    background: Theme.artwork-surface;
+                    border-width: 1px;
+                    border-color: Theme.artwork-border;
+                    clip: true;
+
+                    if (App.has-artwork) : Image {
+                        source: App.artwork;
+                        width: 100%;
+                        height: 100%;
+                        image-fit: cover;
+                    }
+                    if (!App.has-artwork) : Text {
+                        text: "No Artwork";
+                        color: Theme.text-primary;
+                        opacity: 0.6;
+                        font-family: Theme.font-family;
+                        font-size: 12px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+
+        if (App.media.available) : HorizontalLayout {
+            height: 64px;
+            spacing: 24px;
+            alignment: center;
+
+            MediaButton {
+                clicked => {
+                    App.media-command(205);
+                }
+                IconPrev {
+                    width: 32px;
+                    height: 32px;
+                    color: #ffffff;
+                }
+            }
+            MediaButton {
+                clicked => {
+                    App.media-command(203);
+                }
+                if (App.media.state == "Playing") : IconPause {
+                    width: 32px;
+                    height: 32px;
+                    color: #ffffff;
+                }
+                if (App.media.state != "Playing") : IconPlay {
+                    width: 32px;
+                    height: 32px;
+                    color: #ffffff;
+                }
+            }
+            MediaButton {
+                clicked => {
+                    App.media-command(204);
+                }
+                IconNext {
+                    width: 32px;
+                    height: 32px;
+                    color: #ffffff;
+                }
+            }
+        }
+
+        if (App.media.available) : HorizontalLayout {
+            height: 20px;
+            spacing: 12px;
+
+            Text {
+                text: App.media.elapsed;
+                color: Theme.text-primary;
+                opacity: 0.85;
+                font-family: Theme.font-family;
+                font-size: 14px;
+                vertical-alignment: center;
+            }
+
+            Rectangle {
+                horizontal-stretch: 1;
+                height: 9px;
+                border-radius: 6px;
+                background: Theme.rail-track;
+                clip: true;
+
+                Rectangle {
+                    width: parent.width * clamp(App.media.progress, 0.0, 1.0);
+                    height: 100%;
+                    border-radius: 6px;
+                    background: Theme.highlight;
+                }
+            }
+
+            Text {
+                text: App.media.remaining;
+                color: Theme.text-primary;
+                opacity: 0.85;
+                font-family: Theme.font-family;
+                font-size: 14px;
+                vertical-alignment: center;
+            }
+        }
+    }
+}

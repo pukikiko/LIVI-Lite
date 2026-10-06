@@ -1,4 +1,4 @@
-//! Per-screen rendering: backdrop, tagged video planes, the UI plane,
+//! Per-screen rendering: backdrop, the UI plane, tagged video planes above it,
 //! compositor decorations and dialogs, with the optional full-output
 //! calibration (gamma/contrast/gain) shader pass.
 
@@ -210,9 +210,17 @@ fn collect_elements(state: &mut LiviState, screen_idx: usize) -> Vec<LiviElement
         }
     }
 
-    // UI plane
     let renderer = state.host.renderer.as_mut().unwrap();
-    for t in state.toplevels.iter().filter(|t| t.kind == Kind::Ui && t.screen_idx == screen_idx) {
+
+    // Video planes draw over the UI plane: the native UI is an opaque
+    // software-rendered surface and must sit behind the projection. Input
+    // routing still hands touch to the UI first (see input.rs).
+    // Top-to-bottom = reverse of the bottom-to-top video order.
+    for &vi in state.video_order.iter().rev() {
+        let Some(t) = state.toplevels.get(vi) else { continue };
+        if t.kind != Kind::Video || t.screen_idx != screen_idx || !t.visible {
+            continue;
+        }
         elements.extend(
             render_elements_from_surface_tree::<_, WaylandSurfaceRenderElement<GlesRenderer>>(
                 renderer,
@@ -227,12 +235,8 @@ fn collect_elements(state: &mut LiviState, screen_idx: usize) -> Vec<LiviElement
         );
     }
 
-    // video planes, top-to-bottom = reverse of the bottom-to-top order
-    for &vi in state.video_order.iter().rev() {
-        let Some(t) = state.toplevels.get(vi) else { continue };
-        if t.kind != Kind::Video || t.screen_idx != screen_idx || !t.visible {
-            continue;
-        }
+    // UI plane
+    for t in state.toplevels.iter().filter(|t| t.kind == Kind::Ui && t.screen_idx == screen_idx) {
         elements.extend(
             render_elements_from_surface_tree::<_, WaylandSurfaceRenderElement<GlesRenderer>>(
                 renderer,

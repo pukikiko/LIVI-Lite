@@ -1,0 +1,137 @@
+// Shared state, callbacks and data shapes for the LIVI-Lite native UI.
+// The core owns the truth; every property here is fed from Rust.
+
+export struct DeviceRow {
+    id: string,
+    name: string,
+    detail: string,
+    status: string,
+    transport: string,
+    protocol: string,
+    battery-level: float,
+    battery-charging: bool,
+    signal: float,
+    can-connect: bool,
+    can-forget: bool,
+}
+
+export struct MediaState {
+    available: bool,
+    title: string,
+    artist: string,
+    album: string,
+    app: string,
+    state: string,
+    elapsed: string,
+    duration: string,
+    remaining: string,
+    progress: float,
+}
+
+export global App {
+    // Navigation: 0 = projection surface, 1 = devices, 2 = media, 3 = settings.
+    in-out property <int> page: 0;
+
+    // Core/connection status.
+    in-out property <bool> core-connected: false;
+    in-out property <bool> projection-active: false;
+    in-out property <bool> projection-shown: false;
+    in-out property <bool> streaming: false;
+    in-out property <string> protocol: "none";
+    in-out property <string> transport: "";
+    in-out property <string> status-message: "waiting for core";
+    in-out property <string> speed-text: "";
+    in-out property <string> link-text: "";
+    in-out property <string> update-text: "";
+    in-out property <string> nav-text: "";
+    in-out property <bool> cluster-on: false;
+    in-out property <string> time-text: "";
+    // CarPlay-style LED breathe, driven from Rust like the original
+    // --ui-breathe-opacity clock.
+    in-out property <float> breathe-opacity: 0.55;
+
+    // Devices page.
+    in-out property <[DeviceRow]> devices: [];
+    in-out property <string> devices-status: "";
+
+    // Media page.
+    in-out property <MediaState> media: {
+        available: false,
+        title: "",
+        artist: "",
+        album: "",
+        app: "",
+        state: "",
+        elapsed: "",
+        duration: "",
+        remaining: "",
+        progress: 0.0,
+    };
+    in-out property <image> artwork;
+    in-out property <bool> has-artwork: false;
+
+    // Settings page.
+    in-out property <bool> settings-loaded: false;
+    in-out property <string> car-name: "LIVI";
+    in-out property <bool> auto-conn: true;
+    in-out property <bool> wireless-cp-enabled: false;
+    in-out property <bool> wireless-aa-enabled: false;
+    in-out property <string> wifi-password: "12345678";
+    in-out property <int> wifi-channel: 36;
+    in-out property <string> country: "DE";
+    in-out property <string> wifi-interface: "";
+    in-out property <string> bt-adapter: "";
+    in-out property <bool> dark-mode: true;
+    in-out property <float> display-brightness: 1.0;
+    in-out property <float> hu-volume: 0.95;
+    in-out property <float> audio-volume: 0.95;
+    in-out property <float> nav-volume: 0.95;
+    in-out property <float> voice-assistant-volume: 0.95;
+    in-out property <float> call-volume: 0.95;
+    in-out property <string> audio-output-device: "";
+    in-out property <string> audio-input-device: "";
+    in-out property <string> language: "en";
+    in-out property <bool> debug-logging: false;
+    in-out property <string> version-text: "";
+    in-out property <string> display-mode: "";
+
+    // Choice models (filled from the core).
+    in-out property <[string]> wifi-interface-options: [];
+    in-out property <[string]> bt-adapter-options: [];
+    in-out property <[string]> wifi-channel-options: ["36", "40", "44", "48", "149", "153", "157", "161"];
+    in-out property <[string]> country-options: [];
+    in-out property <[string]> audio-output-options: [];
+    in-out property <[string]> audio-input-options: [];
+    in-out property <[string]> language-options: ["en", "de", "fr", "es", "it", "nl", "pt", "ru", "ja", "ko", "zh"];
+    in-out property <[string]> display-mode-options: [];
+
+    // Selected indexes for the combo boxes.
+    in-out property <int> wifi-interface-index: -1;
+    in-out property <int> bt-adapter-index: -1;
+    in-out property <int> wifi-channel-index: -1;
+    in-out property <int> country-index: -1;
+    in-out property <int> audio-output-index: -1;
+    in-out property <int> audio-input-index: -1;
+    in-out property <int> language-index: -1;
+    in-out property <int> display-mode-index: -1;
+
+    // Rust handlers.
+    callback nav(int);
+    callback home();
+    callback pointer(int, float, float, float, float);
+    callback select-device(string);
+    callback forget-device(string);
+    callback connect-device(string);
+    callback refresh-devices();
+    callback cycle-session();
+    callback cluster-request(bool);
+    callback switch-transport(string);
+    callback media-command(int);
+    callback set-string(string, string);
+    callback set-number(string, float);
+    callback set-bool(string, bool);
+    callback refresh-settings();
+    callback restart-app();
+    callback quit-app();
+    callback projection-control(int);
+}

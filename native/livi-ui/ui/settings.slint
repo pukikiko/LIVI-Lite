@@ -1,0 +1,602 @@
+// Settings page, restyled after the original MUI settings surface: a centered
+// title plus rounded Paper cards of 52px rows. The root lists the same
+// categories as the original UI; select rows open a full-page option list.
+
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { App } from "common.slint";
+import {
+    Card,
+    Header,
+    LiviButton,
+    LiviField,
+    LiviSlider,
+    LiviSwitch,
+    NavRow,
+    OptionRow,
+    Row,
+    RowIcon,
+    RowLabel,
+    RowValue,
+    SelectRow,
+} from "controls.slint";
+import {
+    IconAndroid,
+    IconAntenna,
+    IconAspectRatio,
+    IconAutoConnect,
+    IconBluetooth,
+    IconBrightness,
+    IconBug,
+    IconCall,
+    IconCar,
+    IconCluster,
+    IconContrast,
+    IconDarkMode,
+    IconDevices,
+    IconInfo,
+    IconKey,
+    IconMemory,
+    IconMic,
+    IconMonitor,
+    IconMusicNote,
+    IconNavigation,
+    IconPublic,
+    IconRouter,
+    IconSmartphone,
+    IconSpeaker,
+    IconTranslate,
+    IconTune,
+    IconUpdate,
+    IconVoice,
+    IconVolume,
+} from "icons.slint";
+
+// Page skeleton: header + scrollable stack of cards.
+component PageFrame inherits Rectangle {
+    in property <string> title;
+    in property <bool> show-back: true;
+    callback back;
+
+    VerticalLayout {
+        x: 0;
+        y: 0;
+        width: 100%;
+        height: 100%;
+        padding-left: 24px;
+        padding-right: 24px;
+        padding-top: 18px;
+        padding-bottom: 18px;
+        spacing: 10px;
+
+        Header {
+            title: root.title;
+            show-back: root.show-back;
+            back => {
+                root.back();
+            }
+        }
+
+        ScrollView {
+            vertical-stretch: 1;
+            vertical-scrollbar-policy: ScrollBarPolicy.always-off;
+
+            VerticalLayout {
+                spacing: 14px;
+                @children
+            }
+        }
+    }
+}
+
+export component SettingsPage inherits Rectangle {
+    background: Theme.background;
+
+    // 0 = root category list, 2..6 = open sub-page.
+    in-out property <int> section: 0;
+    // -1 = closed, otherwise the option list for `chooser-key` is shown.
+    in-out property <int> chooser: -1;
+    in-out property <string> chooser-title: "";
+    in-out property <string> chooser-key: "";
+    in-out property <[string]> chooser-options: [];
+    in-out property <int> chooser-current: -1;
+
+    function option-text(options: [string], index: int) -> string {
+        if (index < 0 || index >= options.length) {
+            return "---";
+        }
+        return options[index];
+    }
+
+    // Falls back to the stored value until the option list has loaded.
+    function option-or(options: [string], index: int, fallback: string) -> string {
+        if (index >= 0 && index < options.length) {
+            return options[index];
+        }
+        return fallback != "" ? fallback : "---";
+    }
+
+    function open-chooser(title: string, key: string, options: [string], current: int) {
+        chooser-title = title;
+        chooser-key = key;
+        chooser-options = options;
+        chooser-current = current;
+        chooser = 1;
+    }
+
+    function pick(index: int) {
+        chooser = -1;
+        if (chooser-key == "wifiInterface") {
+            App.wifi-interface-index = index;
+        }
+        if (chooser-key == "btAdapter") {
+            App.bt-adapter-index = index;
+        }
+        if (chooser-key == "wifiChannel") {
+            App.wifi-channel-index = index;
+        }
+        if (chooser-key == "country") {
+            App.country-index = index;
+        }
+        if (chooser-key == "displayMode") {
+            App.display-mode-index = index;
+        }
+        if (chooser-key == "language") {
+            App.language-index = index;
+        }
+        if (chooser-key == "audioOutputDevice") {
+            App.audio-output-index = index;
+        }
+        if (chooser-key == "audioInputDevice") {
+            App.audio-input-index = index;
+        }
+        App.set-string(chooser-key, chooser-options[index]);
+    }
+
+    // ------------------------------------------------------------- chooser
+    if (chooser != -1) : PageFrame {
+        title: root.chooser-title;
+        back => {
+            root.chooser = -1;
+        }
+
+        Card {
+            for option[i] in root.chooser-options : OptionRow {
+                label: option;
+                selected: i == root.chooser-current;
+                divider: i < root.chooser-options.length - 1;
+                clicked => {
+                    root.pick(i);
+                }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------- root list
+    if (chooser == -1 && section == 0) : PageFrame {
+        title: "Settings";
+        show-back: false;
+
+        Card {
+            device-entry := NavRow {
+                label: "Devices";
+                IconSmartphone {
+                    width: 100%;
+                    height: 100%;
+                    color: device-entry.pressed ? Theme.primary : Theme.text-secondary;
+                }
+                clicked => {
+                    App.nav(1);
+                }
+            }
+            general-entry := NavRow {
+                label: "General";
+                IconTune {
+                    width: 100%;
+                    height: 100%;
+                    color: general-entry.pressed ? Theme.primary : Theme.text-secondary;
+                }
+                clicked => {
+                    root.section = 2;
+                }
+            }
+            audio-entry := NavRow {
+                label: "Audio";
+                IconVolume {
+                    width: 100%;
+                    height: 100%;
+                    color: audio-entry.pressed ? Theme.primary : Theme.text-secondary;
+                }
+                clicked => {
+                    root.section = 3;
+                }
+            }
+            video-entry := NavRow {
+                label: "Video";
+                IconMonitor {
+                    width: 100%;
+                    height: 100%;
+                    color: video-entry.pressed ? Theme.primary : Theme.text-secondary;
+                }
+                clicked => {
+                    root.section = 4;
+                }
+            }
+            appearance-entry := NavRow {
+                label: "Appearance";
+                IconContrast {
+                    width: 100%;
+                    height: 100%;
+                    color: appearance-entry.pressed ? Theme.primary : Theme.text-secondary;
+                }
+                clicked => {
+                    root.section = 5;
+                }
+            }
+            system-entry := NavRow {
+                label: "System";
+                divider: false;
+                IconMemory {
+                    width: 100%;
+                    height: 100%;
+                    color: system-entry.pressed ? Theme.primary : Theme.text-secondary;
+                }
+                clicked => {
+                    root.section = 6;
+                }
+            }
+        }
+    }
+
+    // ------------------------------------------------------------- general
+    if (chooser == -1 && section == 2) : PageFrame {
+        title: "General";
+        back => {
+            root.section = 0;
+        }
+
+        Card {
+            Row {
+                RowIcon { IconCar { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "Car name"; }
+                LiviField {
+                    text: App.car-name;
+                    edited(t) => {
+                        App.car-name = t;
+                        App.set-string("carName", t);
+                    }
+                }
+            }
+            Row {
+                RowIcon { IconAutoConnect { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "Auto connect"; }
+                LiviSwitch {
+                    checked: App.auto-conn;
+                    toggled(v) => {
+                        App.auto-conn = v;
+                        App.set-bool("autoConn", v);
+                    }
+                }
+            }
+            Row {
+                RowIcon { IconDevices { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "Wireless CarPlay"; }
+                LiviSwitch {
+                    checked: App.wireless-cp-enabled;
+                    toggled(v) => {
+                        App.wireless-cp-enabled = v;
+                        App.set-bool("wirelessCpEnabled", v);
+                    }
+                }
+            }
+            Row {
+                divider: false;
+                RowIcon { IconAndroid { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "Wireless Android Auto"; }
+                LiviSwitch {
+                    checked: App.wireless-aa-enabled;
+                    toggled(v) => {
+                        App.wireless-aa-enabled = v;
+                        App.set-bool("wirelessAaEnabled", v);
+                    }
+                }
+            }
+        }
+
+        Card {
+            Row {
+                RowIcon { IconKey { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "Wi-Fi password"; }
+                LiviField {
+                    text: App.wifi-password;
+                    edited(t) => {
+                        App.wifi-password = t;
+                        App.set-string("wifiPassword", t);
+                    }
+                }
+            }
+            SelectRow {
+                label: "Wi-Fi channel";
+                value: root.option-or(App.wifi-channel-options, App.wifi-channel-index, "" + App.wifi-channel);
+                clicked => {
+                    root.open-chooser("Wi-Fi channel", "wifiChannel", App.wifi-channel-options, App.wifi-channel-index);
+                }
+                RowIcon { IconAntenna { width: 100%; height: 100%; color: Theme.text-secondary; } }
+            }
+            SelectRow {
+                label: "Wi-Fi country";
+                value: root.option-or(App.country-options, App.country-index, App.country);
+                clicked => {
+                    root.open-chooser("Wi-Fi country", "country", App.country-options, App.country-index);
+                }
+                RowIcon { IconPublic { width: 100%; height: 100%; color: Theme.text-secondary; } }
+            }
+            SelectRow {
+                label: "Wi-Fi interface";
+                value: root.option-or(App.wifi-interface-options, App.wifi-interface-index, App.wifi-interface);
+                clicked => {
+                    root.open-chooser("Wi-Fi interface", "wifiInterface", App.wifi-interface-options, App.wifi-interface-index);
+                }
+                RowIcon { IconRouter { width: 100%; height: 100%; color: Theme.text-secondary; } }
+            }
+            SelectRow {
+                label: "Bluetooth adapter";
+                divider: false;
+                value: root.option-or(App.bt-adapter-options, App.bt-adapter-index, App.bt-adapter);
+                clicked => {
+                    root.open-chooser("Bluetooth adapter", "btAdapter", App.bt-adapter-options, App.bt-adapter-index);
+                }
+                RowIcon { IconBluetooth { width: 100%; height: 100%; color: Theme.text-secondary; } }
+            }
+        }
+    }
+
+    // --------------------------------------------------------------- audio
+    if (chooser == -1 && section == 3) : PageFrame {
+        title: "Audio";
+        back => {
+            root.section = 0;
+        }
+
+        Card {
+            Row {
+                RowIcon { IconVolume { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "System volume"; }
+                LiviSlider {
+                    value: App.hu-volume;
+                    changed(v) => {
+                        App.hu-volume = v;
+                        App.set-number("huVolume", v);
+                    }
+                }
+            }
+            Row {
+                RowIcon { IconMusicNote { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "Media volume"; }
+                LiviSlider {
+                    value: App.audio-volume;
+                    changed(v) => {
+                        App.audio-volume = v;
+                        App.set-number("audioVolume", v);
+                    }
+                }
+            }
+            Row {
+                RowIcon { IconNavigation { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "Navigation volume"; }
+                LiviSlider {
+                    value: App.nav-volume;
+                    changed(v) => {
+                        App.nav-volume = v;
+                        App.set-number("navVolume", v);
+                    }
+                }
+            }
+            Row {
+                RowIcon { IconVoice { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "Voice assistant volume"; }
+                LiviSlider {
+                    value: App.voice-assistant-volume;
+                    changed(v) => {
+                        App.voice-assistant-volume = v;
+                        App.set-number("voiceAssistantVolume", v);
+                    }
+                }
+            }
+            Row {
+                divider: false;
+                RowIcon { IconCall { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "Call volume"; }
+                LiviSlider {
+                    value: App.call-volume;
+                    changed(v) => {
+                        App.call-volume = v;
+                        App.set-number("callVolume", v);
+                    }
+                }
+            }
+        }
+
+        Card {
+            SelectRow {
+                label: "Audio output";
+                value: root.option-text(App.audio-output-options, App.audio-output-index);
+                clicked => {
+                    root.open-chooser("Audio output", "audioOutputDevice", App.audio-output-options, App.audio-output-index);
+                }
+                RowIcon { IconSpeaker { width: 100%; height: 100%; color: Theme.text-secondary; } }
+            }
+            SelectRow {
+                label: "Audio input";
+                divider: false;
+                value: root.option-text(App.audio-input-options, App.audio-input-index);
+                clicked => {
+                    root.open-chooser("Audio input", "audioInputDevice", App.audio-input-options, App.audio-input-index);
+                }
+                RowIcon { IconMic { width: 100%; height: 100%; color: Theme.text-secondary; } }
+            }
+        }
+    }
+
+    // --------------------------------------------------------------- video
+    if (chooser == -1 && section == 4) : PageFrame {
+        title: "Video";
+        back => {
+            root.section = 0;
+        }
+
+        Card {
+            SelectRow {
+                label: "Display mode";
+                value: root.option-or(App.display-mode-options, App.display-mode-index, App.display-mode);
+                clicked => {
+                    root.open-chooser("Display mode", "displayMode", App.display-mode-options, App.display-mode-index);
+                }
+                RowIcon { IconAspectRatio { width: 100%; height: 100%; color: Theme.text-secondary; } }
+            }
+            Row {
+                divider: false;
+                RowIcon { IconCluster { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "Cluster display"; }
+                LiviSwitch {
+                    checked: App.cluster-on;
+                    toggled(v) => {
+                        App.cluster-on = v;
+                        App.cluster-request(v);
+                    }
+                }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------- appearance
+    if (chooser == -1 && section == 5) : PageFrame {
+        title: "Appearance";
+        back => {
+            root.section = 0;
+        }
+
+        Card {
+            Row {
+                RowIcon { IconDarkMode { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "Dark mode"; }
+                LiviSwitch {
+                    checked: App.dark-mode;
+                    toggled(v) => {
+                        App.dark-mode = v;
+                        App.set-bool("darkMode", v);
+                    }
+                }
+            }
+            Row {
+                divider: false;
+                RowIcon { IconBrightness { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "Display brightness"; }
+                LiviSlider {
+                    value: App.display-brightness;
+                    changed(v) => {
+                        App.display-brightness = v;
+                        App.set-number("displayBrightness", v);
+                    }
+                }
+            }
+        }
+    }
+
+    // -------------------------------------------------------------- system
+    if (chooser == -1 && section == 6) : PageFrame {
+        title: "System";
+        back => {
+            root.section = 0;
+        }
+
+        Card {
+            SelectRow {
+                label: "Language";
+                value: root.option-or(App.language-options, App.language-index, App.language);
+                clicked => {
+                    root.open-chooser("Language", "language", App.language-options, App.language-index);
+                }
+                RowIcon { IconTranslate { width: 100%; height: 100%; color: Theme.text-secondary; } }
+            }
+            Row {
+                RowIcon { IconBug { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "Debug logging"; }
+                LiviSwitch {
+                    checked: App.debug-logging;
+                    toggled(v) => {
+                        App.debug-logging = v;
+                        App.set-bool("debugLogging", v);
+                    }
+                }
+            }
+            Row {
+                divider: App.update-text != "";
+                RowIcon { IconInfo { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "Version"; }
+                RowValue { text: App.version-text; }
+            }
+            if (App.update-text != "") : Row {
+                divider: false;
+                RowIcon { IconUpdate { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "Update"; }
+                RowValue { text: App.update-text; color: Theme.primary; }
+            }
+        }
+
+        Card {
+            pad: 14px;
+            VerticalLayout {
+                spacing: 10px;
+
+                HorizontalLayout {
+                    spacing: 10px;
+                    LiviButton {
+                        text: "START";
+                        clicked => {
+                            App.projection-control(0);
+                        }
+                    }
+                    LiviButton {
+                        text: "STOP";
+                        outlined: true;
+                        clicked => {
+                            App.projection-control(1);
+                        }
+                    }
+                    LiviButton {
+                        text: "RESTART";
+                        outlined: true;
+                        clicked => {
+                            App.projection-control(2);
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 10px;
+                    LiviButton {
+                        text: "REFRESH SETTINGS";
+                        outlined: true;
+                        clicked => {
+                            App.refresh-settings();
+                        }
+                    }
+                    LiviButton {
+                        text: "RESTART APP";
+                        outlined: true;
+                        clicked => {
+                            App.restart-app();
+                        }
+                    }
+                    LiviButton {
+                        text: "QUIT APP";
+                        outlined: true;
+                        clicked => {
+                            App.quit-app();
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

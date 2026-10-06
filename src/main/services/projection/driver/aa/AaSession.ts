@@ -593,7 +593,10 @@ export class AaSession extends EventEmitter implements IPhoneDriver {
       switch (cmd) {
         case CommandMapping.frame:
         case CommandMapping.requestVideoFocus:
-          this._aa.requestVideoFocus()
+          // Native then projected focus, which makes the phone resume the
+          // stream. A bare VIDEO_FOCUS_REQUEST is refused with NATIVE once
+          // the user has left Android Auto for the host UI.
+          this.requestKeyframe()
           return true
 
         case CommandMapping.releaseVideoFocus:

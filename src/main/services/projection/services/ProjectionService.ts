@@ -1023,7 +1023,16 @@ export class ProjectionService {
       this.emitProjectionEvent({ type: 'audioDevicesChanged' })
     })
 
-    this.codecCaps.applyGstCodecCaps()
+    // LIVI-Lite: the host codec probe is a synchronous execFileSync. Defer it
+    // until after the phone path (helperd spawn + auto-connect) is in motion;
+    // the untested default is the h264 baseline, which is always offered.
+    setImmediate(() => {
+      try {
+        this.codecCaps.applyGstCodecCaps()
+      } catch (e) {
+        console.warn('[ProjectionService] codec probe failed (ignored):', e)
+      }
+    })
   }
 
   private buildIpcHost(): ProjectionIpcHost {

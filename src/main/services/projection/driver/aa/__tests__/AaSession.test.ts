@@ -365,9 +365,10 @@ describe('AaSession.send: SendCommand', () => {
     aa = lastAaStack.instance!
   })
 
-  test('frame triggers a single requestVideoFocus (VIDEO_FOCUS_REQUEST)', async () => {
+  test('frame triggers the main + cluster keyframe dance', async () => {
     await d.send(new SendCommand('frame'))
-    expect(aa.requestVideoFocus).toHaveBeenCalledTimes(1)
+    expect(aa.requestMainKeyframe).toHaveBeenCalledTimes(1)
+    expect(aa.forceClusterKeyframe).toHaveBeenCalledTimes(1)
   })
 
   test('requestClusterStreamFocus triggers requestClusterKeyframe', async () => {

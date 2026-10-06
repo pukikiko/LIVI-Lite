@@ -151,7 +151,11 @@ fn classify_on_initial_commit(state: &mut LiviState, idx: usize) {
     {
         screen_idx = i;
     }
-    let is_dialog = app_id.as_deref() != Some(state.output_app_id.as_str());
+    // LIVI-Lite: native UI clients (Slint/winit) cannot always set the xdg
+    // app_id to the host app id, so any window titled "livi:<role>" is UI too.
+    let title_marks_ui = title.as_deref().is_some_and(|t| t.starts_with("livi:"));
+    let is_dialog =
+        app_id.as_deref() != Some(state.output_app_id.as_str()) && !title_marks_ui;
     state.toplevels[idx].screen_idx = screen_idx;
     state.toplevels[idx].kind = if is_dialog { Kind::Dialog } else { Kind::Ui };
     log::info!(

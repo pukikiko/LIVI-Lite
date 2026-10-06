@@ -1,0 +1,473 @@
+// Shared controls for the native shell, styled after the original MUI theme:
+// rounded Paper cards, 52px settings rows with inset dividers, teal switches,
+// pill sliders and contained/outlined buttons.
+
+import { Theme } from "theme.slint";
+import { IconBack, IconChevron } from "icons.slint";
+
+// Rounded MUI Paper surface holding a stack of rows.
+export component Card inherits Rectangle {
+    in property <length> pad: 0px;
+
+    background: Theme.card;
+    border-radius: Theme.card-radius;
+    clip: true;
+    height: content.preferred-height;
+
+    content := VerticalLayout {
+        x: 0;
+        y: 0;
+        width: 100%;
+        padding: root.pad;
+        spacing: 0;
+        @children
+    }
+}
+
+// 52px row: icon + label on the left, control on the right.
+export component Row inherits Rectangle {
+    in property <bool> divider: true;
+    height: Theme.row-height;
+
+    HorizontalLayout {
+        x: 0;
+        y: 0;
+        width: 100%;
+        height: 100%;
+        padding-left: Theme.row-pad;
+        padding-right: Theme.row-pad;
+        spacing: Theme.row-gap;
+        cross-axis-alignment: center;
+        @children
+    }
+
+    if (root.divider) : Rectangle {
+        x: Theme.row-pad + Theme.row-icon-size + Theme.row-gap;
+        y: parent.height - 2px;
+        width: parent.width - self.x - Theme.row-pad;
+        height: 2px;
+        background: Theme.divider;
+    }
+}
+
+export component RowLabel inherits Text {
+    color: Theme.text-secondary;
+    font-family: Theme.font-family;
+    font-size: Theme.row-font-size;
+    vertical-alignment: center;
+    horizontal-stretch: 1;
+    overflow: elide;
+}
+
+export component RowValue inherits Text {
+    color: Theme.text-primary;
+    font-family: Theme.font-family;
+    font-size: Theme.value-font-size;
+    vertical-alignment: center;
+    horizontal-alignment: right;
+    overflow: elide;
+}
+
+export component RowIcon inherits Rectangle {
+    width: Theme.row-icon-size;
+    height: Theme.row-icon-size;
+    @children
+}
+
+// Root settings entry: icon + label + chevron, tapping opens a sub-page.
+export component NavRow inherits Rectangle {
+    in property <string> label;
+    in property <bool> divider: true;
+    out property <bool> pressed: ta.pressed;
+    callback clicked;
+    height: Theme.row-height;
+
+    ta := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+
+    HorizontalLayout {
+        x: 0;
+        y: 0;
+        width: 100%;
+        height: 100%;
+        padding-left: Theme.row-pad;
+        padding-right: Theme.row-pad;
+        spacing: Theme.row-gap;
+        cross-axis-alignment: center;
+
+        @children
+
+        Text {
+            text: root.label;
+            color: ta.pressed ? Theme.primary : Theme.text-secondary;
+            font-family: Theme.font-family;
+            font-size: Theme.row-font-size;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            overflow: elide;
+        }
+        IconChevron {
+            width: 16px;
+            height: 16px;
+            color: ta.pressed ? Theme.primary : Theme.text-primary;
+        }
+    }
+
+    if (root.divider) : Rectangle {
+        x: Theme.row-pad + Theme.row-icon-size + Theme.row-gap;
+        y: parent.height - 2px;
+        width: parent.width - self.x - Theme.row-pad;
+        height: 2px;
+        background: Theme.divider;
+    }
+}
+
+export component SectionLabel inherits Text {
+    color: Theme.text-secondary;
+    font-family: Theme.font-family;
+    font-size: 14px;
+    font-weight: 500;
+    vertical-alignment: center;
+    height: 36px;
+}
+
+export component LiviSwitch inherits Rectangle {
+    in-out property <bool> checked: false;
+    callback toggled(bool);
+
+    width: 44px;
+    height: 26px;
+    border-radius: 13px;
+    background: checked ? Theme.primary : Theme.switch-off;
+
+    animate background {
+        duration: 120ms;
+        easing: ease-in-out;
+    }
+
+    knob := Rectangle {
+        width: 20px;
+        height: 20px;
+        y: 3px;
+        x: root.checked ? parent.width - 23px : 3px;
+        border-radius: 10px;
+        background: #ffffff;
+        animate x {
+            duration: 120ms;
+            easing: ease-in-out;
+        }
+    }
+
+    ta := TouchArea {
+        clicked => {
+            root.checked = !root.checked;
+            root.toggled(root.checked);
+        }
+    }
+}
+
+// MUI contained / outlined button.
+export component LiviButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> outlined: false;
+    in property <bool> enabled: true;
+    callback clicked;
+
+    height: 38px;
+    min-width: 88px;
+    border-radius: 4px;
+    opacity: enabled ? 1.0 : 0.4;
+    background: outlined
+        ? (btn.pressed ? Theme.state-hover : transparent)
+        : (btn.pressed ? Theme.highlight : Theme.primary);
+    border-width: outlined ? 1px : 0px;
+    border-color: Theme.primary.with-alpha(0.5);
+
+    Text {
+        text: root.text;
+        color: outlined ? Theme.primary : #ffffff;
+        font-family: Theme.font-family;
+        font-size: 14px;
+        font-weight: 500;
+        letter-spacing: 0.4px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    btn := TouchArea {
+        clicked => {
+            if (root.enabled) {
+                root.clicked();
+            }
+        }
+    }
+}
+
+export component LiviIconButton inherits Rectangle {
+    in property <bool> enabled: true;
+    callback clicked;
+
+    width: 40px;
+    height: 40px;
+    border-radius: 20px;
+    background: btn.pressed ? Theme.state-hover : transparent;
+    opacity: enabled ? 1.0 : 0.4;
+
+    HorizontalLayout {
+        x: 0;
+        y: 0;
+        width: 100%;
+        height: 100%;
+        alignment: center;
+        cross-axis-alignment: center;
+        @children
+    }
+
+    btn := TouchArea {
+        clicked => {
+            if (root.enabled) {
+                root.clicked();
+            }
+        }
+    }
+}
+
+// MUI outlined text field.
+export component LiviField inherits Rectangle {
+    in-out property <string> text <=> input.text;
+    callback edited(string);
+
+    width: 260px;
+    height: 40px;
+    border-radius: 4px;
+    background: transparent;
+    border-width: input.has-focus ? 2px : 1px;
+    border-color: input.has-focus ? Theme.text-secondary : Theme.divider;
+
+    input := TextInput {
+        x: 11px;
+        width: parent.width - 22px;
+        height: 100%;
+        color: Theme.text-primary;
+        font-family: Theme.font-family;
+        font-size: 16px;
+        vertical-alignment: center;
+        single-line: true;
+        edited => {
+            root.edited(input.text);
+        }
+    }
+}
+
+// MUI-style pill slider with the value rendered inside the track.
+export component LiviSlider inherits Rectangle {
+    in-out property <float> value: 0.5;
+    in property <bool> enabled: true;
+    callback changed(float);
+
+    width: 300px;
+    height: 42px;
+
+    rail := Rectangle {
+        width: 100%;
+        height: 100%;
+        border-radius: 21px;
+        background: Theme.rail-track;
+    }
+
+    fill := Rectangle {
+        width: parent.width * clamp(root.value, 0.0, 1.0);
+        height: 100%;
+        border-radius: 21px;
+        background: Theme.primary;
+    }
+
+    Text {
+        x: max(12px, fill.width - self.width - 14px);
+        height: 100%;
+        text: round(root.value * 100) + "%";
+        color: fill.width > self.width + 24px ? #ffffff : Theme.text-primary;
+        font-family: Theme.font-family;
+        font-size: 17px;
+        font-weight: 900;
+        vertical-alignment: center;
+    }
+
+    ta := TouchArea {
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down || e.kind == PointerEventKind.move) {
+                root.slide(ta.mouse-x);
+            }
+        }
+    }
+
+    function slide(x: length) {
+        if (!root.enabled) {
+            return;
+        }
+        root.value = clamp(x / root.width, 0.0, 1.0);
+        root.changed(root.value);
+    }
+}
+
+// Select row: icon + label, current value and a chevron.
+export component SelectRow inherits Rectangle {
+    in property <string> label;
+    in property <string> value;
+    in property <bool> divider: true;
+    callback clicked;
+    height: Theme.row-height;
+
+    ta := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+
+    HorizontalLayout {
+        x: 0;
+        y: 0;
+        width: 100%;
+        height: 100%;
+        padding-left: Theme.row-pad;
+        padding-right: Theme.row-pad;
+        spacing: Theme.row-gap;
+        cross-axis-alignment: center;
+
+        @children
+
+        Text {
+            text: root.label;
+            color: ta.pressed ? Theme.primary : Theme.text-secondary;
+            font-family: Theme.font-family;
+            font-size: Theme.row-font-size;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            overflow: elide;
+        }
+        Text {
+            text: root.value;
+            color: Theme.text-primary;
+            font-family: Theme.font-family;
+            font-size: Theme.value-font-size;
+            vertical-alignment: center;
+            horizontal-alignment: right;
+            overflow: elide;
+        }
+        IconChevron {
+            width: 16px;
+            height: 16px;
+            color: ta.pressed ? Theme.primary : Theme.text-primary;
+        }
+    }
+
+    if (root.divider) : Rectangle {
+        x: Theme.row-pad + Theme.row-icon-size + Theme.row-gap;
+        y: parent.height - 2px;
+        width: parent.width - self.x - Theme.row-pad;
+        height: 2px;
+        background: Theme.divider;
+    }
+}
+
+// Option list item: label + accent dot when selected.
+export component OptionRow inherits Rectangle {
+    in property <string> label;
+    in property <bool> selected: false;
+    in property <bool> divider: true;
+    callback clicked;
+    height: Theme.row-height;
+
+    ta := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+
+    HorizontalLayout {
+        x: 0;
+        y: 0;
+        width: 100%;
+        height: 100%;
+        padding-left: Theme.row-pad;
+        padding-right: Theme.row-pad;
+        spacing: Theme.row-gap;
+        cross-axis-alignment: center;
+
+        // Icon slot, kept so option lists align with the settings rows.
+        Rectangle {
+            width: Theme.row-icon-size;
+            height: 1px;
+        }
+        Text {
+            text: root.label;
+            color: ta.pressed ? Theme.primary : Theme.text-secondary;
+            font-family: Theme.font-family;
+            font-size: Theme.row-font-size;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            overflow: elide;
+        }
+        Rectangle {
+            visible: root.selected;
+            width: 10px;
+            height: 10px;
+            border-radius: 5px;
+            background: Theme.primary;
+        }
+    }
+
+    if (root.divider) : Rectangle {
+        x: Theme.row-pad + Theme.row-icon-size + Theme.row-gap;
+        y: parent.height - 2px;
+        width: parent.width - self.x - Theme.row-pad;
+        height: 2px;
+        background: Theme.divider;
+    }
+}
+
+// Centered 800 weight heading with an optional back button, like SettingsLayout.
+export component Header inherits Rectangle {
+    in property <string> title;
+    in property <bool> show-back: false;
+    callback back;
+
+    height: 40px;
+
+    if (root.show-back) : Rectangle {
+        x: 0;
+        y: 0;
+        width: 44px;
+        height: 40px;
+
+        back-ta := TouchArea {
+            clicked => {
+                root.back();
+            }
+        }
+
+        IconBack {
+            width: 22px;
+            height: 22px;
+            color: back-ta.has-hover || back-ta.pressed ? Theme.primary : Theme.text-primary;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+        }
+    }
+
+    Text {
+        text: root.title;
+        color: Theme.text-primary;
+        font-family: Theme.font-family;
+        font-size: Theme.title-size;
+        font-weight: 800;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        width: 100%;
+        height: 100%;
+        overflow: elide;
+    }
+}

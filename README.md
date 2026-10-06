@@ -8,6 +8,49 @@ LIVI is an open-source **Apple CarPlay and Android Auto head unit**.
 
 It is a standalone cross-platform head unit with a native, zero-copy GStreamer video pipeline and hardware-accelerated decoding on Linux (including the Raspberry Pi 4 and 5) and macOS, low-latency audio, multitouch + D-Pad navigation, and support for very small embedded/OEM displays.
 
+> ## LIVI-Lite (this fork)
+>
+> This fork removes Electron entirely. The React/MUI renderer is replaced by a
+> small Rust + [Slint](https://slint.dev) UI (`native/livi-ui`, software renderer),
+> and the service/projection core runs on plain **Node.js** with a thin Electron-API
+> shim (`src/node/platform/electron-shim.ts`) - no Chromium anywhere. Core and UI
+> talk over a newline-delimited JSON Unix socket (`src/node/ui/UiServer.ts`).
+>
+> The video path was already Electron-free: `livi-gst-host` presents decoded
+> DMA-BUF planes directly to `livi-compositor` via `waylandsink`. The Slint window
+> renders *below* the video plane; the compositor routes input UI-first, so touch
+> still reaches the UI while projection is on screen. Swipe up from the bottom
+> edge (or right from the left edge) to reveal the shell.
+>
+> **Build**
+>
+> ```sh
+> pnpm install --ignore-scripts
+> pnpm run build            # bundles out/core/livi-core.cjs + builds livi-ui
+> pnpm run build:native     # compositor, gst host, helperd (needs Rust + GStreamer deps)
+> ```
+>
+> `electron` remains a dev-only dependency for TypeScript types of the legacy
+> service layer; it is never bundled or loaded at runtime.
+>
+> **Run (dev)**
+>
+> ```sh
+> node out/core/livi-core.cjs          # core only
+> out/ui/livi-ui                        # UI + compositor + core (needs pnpm run build:native)
+> LIVI_NO_COMPOSITOR=1 native/livi-ui/target/release/livi-ui   # plain window on the host desktop
+> ```
+>
+> Do not run the UI with `sudo`: the core socket lives in the user's
+> `XDG_RUNTIME_DIR` and `node` must be on `PATH`. `out/ui/livi-ui` finds the
+> compositor next to it; a dev-tree build (`native/livi-ui/target/release/livi-ui`)
+> finds `out/compositor/livi-compositor` as well.
+>
+> Current limitations of the fork: dash/aux secondary windows, telemetry
+> dashboards and the custom-page iframe are not ported yet; device/settings/media
+> functionality is present. The updater and the original AppImage installer are
+> not wired for the new layout.
+
 
 ## Project Status
 
