@@ -15,24 +15,36 @@
 // configfs interface for device-tree overlays any more, so `echo NAME > /sys/firmware/ax520/overlay`
 // applies /dtbo/ax520-NAME.dtbo (baked into the initramfs). A block that freezes the bus on its first
 // register access then costs a power cycle, not a flash.
+//
+// And the restart: the SoC resets only through its own watchdog, which no mainline driver knows.
 
+#include <linux/clk.h>
 #include <linux/clockchips.h>
 #include <linux/clocksource.h>
 #include <linux/ctype.h>
+#include <linux/delay.h>
 #include <linux/init.h>
 #include <linux/io.h>
 #include <linux/kernel_read_file.h>
 #include <linux/kobject.h>
 #include <linux/limits.h>
 #include <linux/of.h>
+#include <linux/of_address.h>
 #include <linux/of_clk.h>
 #include <linux/printk.h>
+#include <linux/reboot.h>
 #include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/vmalloc.h>
 #include <asm/mach/arch.h>
 
 #define AX520_SYSCNT_BASE	0x0b600000
+
+/* Writes to the watchdog only take while the key sits in the lock register. */
+#define AX520_WDT_LOCK		0x00
+#define AX520_WDT_LOAD		0x08
+#define AX520_WDT_ENABLE	0x10
+#define AX520_WDT_KEY		0x5ada7200
 
 static u64 ax520_cntpct(void)
 {
@@ -146,6 +158,46 @@ static int __init ax520_overlay_init(void)
 }
 device_initcall(ax520_overlay_init);
 
+static void __iomem *ax520_wdt;
+static unsigned long ax520_wdt_hz;
+
+static int __init ax520_wdt_init(void)
+{
+	struct device_node *np = of_find_compatible_node(NULL, NULL, "axera,ax520-wdt");
+	struct clk *clk;
+
+	if (!np)
+		return 0;
+	clk = of_clk_get(np, 0);
+	if (!IS_ERR(clk)) {
+		ax520_wdt_hz = clk_get_rate(clk);
+		clk_put(clk);
+		ax520_wdt = of_iomap(np, 0);
+	}
+	of_node_put(np);
+	if (!ax520_wdt || !ax520_wdt_hz)
+		pr_warn("ax520: watchdog not usable, reboot will hang\n");
+	return 0;
+}
+arch_initcall(ax520_wdt_init);
+
+static void ax520_restart(enum reboot_mode mode, const char *cmd)
+{
+	if (!ax520_wdt || !ax520_wdt_hz)
+		return;
+	writel(AX520_WDT_KEY, ax520_wdt + AX520_WDT_LOCK);
+	writel(0, ax520_wdt + AX520_WDT_ENABLE);
+	writel(0, ax520_wdt + AX520_WDT_LOCK);
+	writel(AX520_WDT_KEY, ax520_wdt + AX520_WDT_LOCK);
+	writel(ax520_wdt_hz / 10, ax520_wdt + AX520_WDT_LOAD);
+	/* Cleared before enabling, as the vendor kernel does. What it holds is unknown. */
+	writel(0, ax520_wdt + 0x04);
+	writel(1, ax520_wdt + AX520_WDT_ENABLE);
+	writel(0, ax520_wdt + AX520_WDT_LOCK);
+	mdelay(1000);
+	pr_emerg("ax520: the watchdog did not reset the SoC\n");
+}
+
 static const char *const ax520_dt_match[] = {
 	"axera,ax520",
 	NULL
@@ -153,5 +205,6 @@ static const char *const ax520_dt_match[] = {
 
 DT_MACHINE_START(AX520_DT, "AXERA AX520")
 	.init_time	= ax520_init_time,
+	.restart	= ax520_restart,
 	.dt_compat	= ax520_dt_match,
 MACHINE_END

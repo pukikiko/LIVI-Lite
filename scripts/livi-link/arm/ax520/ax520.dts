@@ -143,6 +143,13 @@
 			status = "disabled";
 		};
 
+		/* No driver binds this, mach.c restarts the SoC through it. */
+		watchdog@11a0000 {
+			compatible = "axera,ax520-wdt";
+			reg = <0x011a0000 0x1000>;
+			clocks = <&clk_apb>;
+		};
+
 		serial0: serial@90a0000 {
 			compatible = "snps,dw-apb-uart";
 			reg = <0x090a0000 0x1000>;
