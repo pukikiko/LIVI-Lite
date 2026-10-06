@@ -46,10 +46,10 @@ It is a standalone cross-platform head unit with a native, zero-copy GStreamer v
 > plain window on the desktop. Do not run LIVI with `sudo`: the core socket
 > lives in the user's `XDG_RUNTIME_DIR`.
 >
-> **Upstream sync:** the fork work lives on the `native-ui` branch of
-> [pukikiko/LIVI-Lite](https://github.com/pukikiko/LIVI-Lite), merged against
+> **Upstream sync:** the fork lives at
+> [pukikiko/LIVI-Lite](https://github.com/pukikiko/LIVI-Lite); its `main` tracks
 > `f-io/LIVI` `main` (`upstream` remote). The pre-Rust-core state is kept on the
-> `native-ui-pre-sync` branch and the `pre-rust-core-sync` tag.
+> `pre-rust-core-sync` tag.
 >
 > **Limitations of the fork:** dash/aux secondary windows, telemetry dashboards,
 > camera, the custom page, the updater and the AppImage/dmg packaging are not
@@ -400,9 +400,8 @@ not wire video or windows on macOS yet — Linux is the target platform.
 ### Clone & Build
 
 ```bash
-# Git clone (fork work lives on native-ui)
-git clone --branch native-ui --single-branch https://github.com/pukikiko/LIVI-Lite.git \
-  && cd LIVI-Lite
+# Git clone (the fork's main carries the native UI)
+git clone https://github.com/pukikiko/LIVI-Lite.git && cd LIVI-Lite
 
 # Install the build tooling (biome, husky, lint-staged)
 pnpm install --ignore-scripts
