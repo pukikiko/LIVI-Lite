@@ -133,10 +133,7 @@ mod tests {
         assert_eq!(repo.compositor, PathBuf::from("/src/LIVI/out/compositor/livi-compositor"));
         assert_eq!(
             repo.ui,
-            Some(UiCmd::Exec {
-                bin: PathBuf::from("/src/LIVI/out/ui/livi-ui"),
-                args: Vec::new(),
-            })
+            Some(UiCmd::Exec { bin: PathBuf::from("/src/LIVI/out/ui/livi-ui"), args: Vec::new() })
         );
         let installed = Resources::installed(Path::new("/opt/LIVI/resources"));
         assert_eq!(installed.helper, PathBuf::from("/opt/LIVI/resources/driver/livi-helperd"));

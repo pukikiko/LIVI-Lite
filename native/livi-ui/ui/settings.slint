@@ -552,29 +552,6 @@ export component SettingsPage inherits Rectangle {
                 HorizontalLayout {
                     spacing: 10px;
                     LiviButton {
-                        text: "START";
-                        clicked => {
-                            App.projection-control(0);
-                        }
-                    }
-                    LiviButton {
-                        text: "STOP";
-                        outlined: true;
-                        clicked => {
-                            App.projection-control(1);
-                        }
-                    }
-                    LiviButton {
-                        text: "RESTART";
-                        outlined: true;
-                        clicked => {
-                            App.projection-control(2);
-                        }
-                    }
-                }
-                HorizontalLayout {
-                    spacing: 10px;
-                    LiviButton {
                         text: "REFRESH SETTINGS";
                         outlined: true;
                         clicked => {

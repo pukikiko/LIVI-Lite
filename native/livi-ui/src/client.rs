@@ -1,19 +1,25 @@
-//! Newline-delimited JSON client for the core's UI Unix socket.
+//! Framed-JSON client for livi-core's control socket.
 //!
-//! Requests carry an `id` and are answered with `{"id":N,"ok":...}`.
-//! Fire-and-forget messages have no `id`. Core events are
-//! `{"event":"name","args":[...]}`.
+//! The wire format is livi-core-proto's: a little-endian u32 byte count
+//! followed by that many bytes of JSON. The client says `hello`, keeps a local
+//! copy of the state from `welcome` and `patch` (asking for a resync when a
+//! patch is missed) and hands every new snapshot to the UI thread.
 
-use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::os::unix::net::UnixStream;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{self, Sender};
+use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use serde_json::{Value, json};
+use livi_core_proto::PROTOCOL;
+use livi_core_proto::frame::{Decoder, encode};
+use livi_core_proto::input::Input;
+use livi_core_proto::message::{Action, FromCore, ToCore};
+use livi_core_proto::patch;
+use serde_json::Value;
 
 macro_rules! livi_log {
     ($($arg:tt)*) => {
@@ -22,182 +28,211 @@ macro_rules! livi_log {
 }
 pub(crate) use livi_log;
 
-const RETRY_INTERVAL: Duration = Duration::from_millis(100);
-const INITIAL_WAIT: Duration = Duration::from_secs(15);
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
+const RETRY: Duration = Duration::from_millis(500);
+const READ_POLL: Duration = Duration::from_millis(250);
 
-pub type EventFn = Arc<dyn Fn(&str, Value) + Send + Sync>;
-pub type StatusFn = Arc<dyn Fn(bool) + Send + Sync>;
-
-pub fn socket_path() -> String {
-    if let Ok(path) = std::env::var("LIVI_UI_SOCK") {
-        if !path.is_empty() {
-            return path;
-        }
+/// Core sets LIVI_CORE_SOCKET for the UI it starts; the fallbacks match
+/// livi-core's own Paths::socket().
+pub fn socket_path() -> PathBuf {
+    if let Some(path) = std::env::var_os("LIVI_CORE_SOCKET").filter(|v| !v.is_empty()) {
+        return PathBuf::from(path);
     }
-    if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR") {
-        if !dir.is_empty() {
-            return format!("{dir}/livi-ui.sock");
-        }
+    if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR").filter(|v| !v.is_empty()) {
+        return PathBuf::from(dir).join("livi").join("core.sock");
     }
-    "/tmp/livi-ui.sock".to_string()
+    // SAFETY: geteuid has no preconditions.
+    let uid = unsafe { libc::geteuid() };
+    std::env::temp_dir().join(format!("livi-{uid}")).join("core.sock")
 }
 
-pub struct Client {
-    writer: Mutex<Option<UnixStream>>,
-    pending: Mutex<HashMap<u64, Sender<Result<Value, String>>>>,
+pub enum CoreEvent {
+    Welcome { version: String, state: Value },
+    Patch { state: Value },
+    Refused(String),
+    Connected(bool),
+}
+
+struct Shared {
+    stream: Mutex<Option<UnixStream>>,
     next_id: AtomicU64,
-    connected: AtomicBool,
+    last_path: Mutex<Option<String>>,
+    link_speed: AtomicBool,
+}
+
+#[derive(Clone)]
+pub struct Client {
+    shared: Arc<Shared>,
 }
 
 impl Client {
-    pub fn new() -> Arc<Self> {
-        Arc::new(Self {
-            writer: Mutex::new(None),
-            pending: Mutex::new(HashMap::new()),
-            next_id: AtomicU64::new(1),
-            connected: AtomicBool::new(false),
-        })
-    }
-
-    /// Send a message without expecting a reply.
-    pub fn fire(&self, method: &str, params: Value) {
-        let line = json!({ "method": method, "params": params }).to_string();
-        self.write_line(&line);
-    }
-
-    /// Send a request and wait for its response.
-    pub fn request_blocking(&self, method: &str, params: Value) -> Result<Value, String> {
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let (tx, rx) = mpsc::channel();
-        self.pending.lock().unwrap().insert(id, tx);
-        let line = json!({ "id": id, "method": method, "params": params }).to_string();
-        self.write_line(&line);
-        match rx.recv_timeout(REQUEST_TIMEOUT) {
-            Ok(result) => result,
-            Err(_) => {
-                self.pending.lock().unwrap().remove(&id);
-                Err(format!("timeout waiting for {method}"))
-            }
+    pub fn new() -> Self {
+        Self {
+            shared: Arc::new(Shared {
+                stream: Mutex::new(None),
+                next_id: AtomicU64::new(1),
+                last_path: Mutex::new(None),
+                link_speed: AtomicBool::new(false),
+            }),
         }
     }
 
-    fn write_line(&self, line: &str) {
-        let mut guard = self.writer.lock().unwrap();
-        if let Some(stream) = guard.as_mut() {
-            if stream.write_all(line.as_bytes()).is_err() || stream.write_all(b"\n").is_err() {
-                return;
-            }
-            let _ = stream.flush();
+    /// Silently dropped while core is away, a late input or action does harm.
+    pub fn send(&self, msg: ToCore) {
+        let Ok(frame) = encode(&msg) else {
+            livi_log!("cannot encode {msg:?}");
+            return;
+        };
+        let mut guard = self.shared.stream.lock().unwrap();
+        let failed = match guard.as_mut() {
+            Some(stream) => match stream.write_all(&frame) {
+                Ok(()) => false,
+                Err(e) => {
+                    livi_log!("write failed: {e}");
+                    true
+                }
+            },
+            None => false,
+        };
+        if failed {
+            *guard = None;
         }
     }
 
-    fn fail_pending(&self, message: &str) {
-        let pending: Vec<_> = self.pending.lock().unwrap().drain().map(|(_, tx)| tx).collect();
-        for tx in pending {
-            let _ = tx.send(Err(message.to_string()));
-        }
+    pub fn act(&self, action: Action) {
+        let id = self.shared.next_id.fetch_add(1, Ordering::Relaxed) as u32;
+        self.send(ToCore::Action { id, action });
+    }
+
+    pub fn input(&self, input: Input) {
+        self.send(ToCore::Input { input });
+    }
+
+    pub fn path(&self, path: &str) {
+        *self.shared.last_path.lock().unwrap() = Some(path.to_string());
+        self.send(ToCore::Path { path: path.to_string() });
+    }
+
+    pub fn link_speed(&self, on: bool) {
+        self.shared.link_speed.store(on, Ordering::Relaxed);
+        self.send(ToCore::LinkSpeed { on });
+    }
+
+    pub fn resync(&self) {
+        self.send(ToCore::Resync);
     }
 }
 
-/// Connect (with retries), then read lines until the peer drops, forever.
-pub fn spawn_listener(client: Arc<Client>, on_event: EventFn, on_status: StatusFn) {
-    let builder = thread::Builder::new().name("core-socket".to_string());
-    builder
-        .spawn(move || {
-            let path = socket_path();
-            livi_log!("waiting for core on {path}");
-            let started = Instant::now();
-            let mut last_failure_log: Option<Instant> = None;
+pub fn spawn(client: Client, events: Sender<CoreEvent>) {
+    let _ = thread::Builder::new().name("core-link".into()).spawn(move || run(client, events));
+}
 
-            loop {
-                match UnixStream::connect(&path) {
-                    Ok(stream) => {
-                        let reader = match stream.try_clone() {
-                            Ok(reader) => reader,
-                            Err(e) => {
-                                livi_log!("socket clone failed: {e}");
-                                thread::sleep(RETRY_INTERVAL);
-                                continue;
-                            }
-                        };
+fn run(client: Client, events: Sender<CoreEvent>) {
+    let shared = client.shared.clone();
+    let path = socket_path();
+    livi_log!("connecting to {}", path.display());
+    let mut state: Option<Value> = None;
+    let mut rev = 0u64;
 
-                        *client.writer.lock().unwrap() = Some(stream);
-                        client.connected.store(true, Ordering::SeqCst);
-                        livi_log!("connected to core");
-                        on_status(true);
-
-                        let buffered = BufReader::new(reader);
-                        for line in buffered.lines() {
-                            let line = match line {
-                                Ok(line) => line,
-                                Err(_) => break,
-                            };
-                            if line.trim().is_empty() {
-                                continue;
-                            }
-                            let value: Value = match serde_json::from_str(&line) {
-                                Ok(value) => value,
-                                Err(e) => {
-                                    livi_log!("dropping malformed core line: {e}");
-                                    continue;
-                                }
-                            };
-                            if let Some(id) = value.get("id").and_then(Value::as_u64) {
-                                let result =
-                                    if value.get("ok").and_then(Value::as_bool).unwrap_or(false) {
-                                        Ok(value.get("result").cloned().unwrap_or(Value::Null))
-                                    } else {
-                                        Err(value
-                                            .get("error")
-                                            .and_then(Value::as_str)
-                                            .unwrap_or("request failed")
-                                            .to_string())
-                                    };
-                                if let Some(tx) = client.pending.lock().unwrap().remove(&id) {
-                                    let _ = tx.send(result);
-                                }
-                            } else if let Some(event) = value.get("event").and_then(Value::as_str) {
-                                let args = value.get("args").cloned().unwrap_or_else(|| json!([]));
-                                on_event(event, args);
-                            }
-                        }
-
-                        *client.writer.lock().unwrap() = None;
-                        client.connected.store(false, Ordering::SeqCst);
-                        client.fail_pending("core disconnected");
-                        livi_log!("core disconnected; reconnecting");
-                        on_status(false);
-                    }
+    loop {
+        match UnixStream::connect(&path) {
+            Ok(stream) => {
+                let _ = stream.set_read_timeout(Some(READ_POLL));
+                let mut reader = match stream.try_clone() {
+                    Ok(reader) => reader,
                     Err(e) => {
-                        let now = Instant::now();
-                        let first = last_failure_log.is_none();
-                        let due = last_failure_log
-                            .map(|last| now.duration_since(last) >= Duration::from_secs(10))
-                            .unwrap_or(true);
-                        if first || due {
-                            if started.elapsed() < INITIAL_WAIT {
-                                livi_log!("still waiting for core ({e})");
-                            } else {
-                                livi_log!("core still unreachable ({e})");
+                        livi_log!("cannot duplicate the socket: {e}");
+                        thread::sleep(RETRY);
+                        continue;
+                    }
+                };
+                *shared.stream.lock().unwrap() = Some(stream);
+                client.send(ToCore::Hello { protocol: PROTOCOL, client: "livi-ui".into() });
+                let _ = events.send(CoreEvent::Connected(true));
+                livi_log!("connected");
+
+                let mut decoder = Decoder::new();
+                let mut buf = [0u8; 64 * 1024];
+                'read: loop {
+                    match reader.read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            decoder.push(&buf[..n]);
+                            while let Some(msg) = decoder.next_message::<FromCore>() {
+                                let msg = match msg {
+                                    Ok(msg) => msg,
+                                    Err(e) => {
+                                        livi_log!("broken frame: {e}");
+                                        break 'read;
+                                    }
+                                };
+                                match msg {
+                                    FromCore::Welcome { version, rev: r, state: s, .. } => {
+                                        let value =
+                                            serde_json::to_value(&*s).unwrap_or(Value::Null);
+                                        state = Some(value.clone());
+                                        rev = r;
+                                        livi_log!("welcome from core {version} (rev {r})");
+                                        let _ = events
+                                            .send(CoreEvent::Welcome { version, state: value });
+                                        // Re-assert what core can have missed.
+                                        if let Some(path) = shared.last_path.lock().unwrap().clone()
+                                        {
+                                            client.send(ToCore::Path { path });
+                                        }
+                                        if shared.link_speed.load(Ordering::Relaxed) {
+                                            client.send(ToCore::LinkSpeed { on: true });
+                                        }
+                                    }
+                                    FromCore::Patch { rev: r, ops } => match state.as_mut() {
+                                        Some(value) if r == rev + 1 => {
+                                            let mut ok = true;
+                                            for op in &ops {
+                                                if patch::apply(value, op).is_err() {
+                                                    ok = false;
+                                                    break;
+                                                }
+                                            }
+                                            if ok {
+                                                rev = r;
+                                                let _ = events.send(CoreEvent::Patch {
+                                                    state: value.clone(),
+                                                });
+                                            } else {
+                                                livi_log!("patch did not apply, resyncing");
+                                                client.resync();
+                                            }
+                                        }
+                                        _ => {
+                                            livi_log!("missed a patch, resyncing");
+                                            client.resync();
+                                        }
+                                    },
+                                    FromCore::Reply { id, error } => {
+                                        if let Some(error) = error {
+                                            livi_log!("action {id}: {error}");
+                                        }
+                                    }
+                                    FromCore::Refused { reason } => {
+                                        livi_log!("core refused us: {reason}");
+                                        let _ = events.send(CoreEvent::Refused(reason));
+                                        return;
+                                    }
+                                    FromCore::Spectrum { .. } => {}
+                                }
                             }
-                            last_failure_log = Some(now);
                         }
+                        Err(e)
+                            if e.kind() == ErrorKind::WouldBlock
+                                || e.kind() == ErrorKind::TimedOut => {}
+                        Err(_) => break,
                     }
                 }
-                thread::sleep(RETRY_INTERVAL);
+                *shared.stream.lock().unwrap() = None;
+                let _ = events.send(CoreEvent::Connected(false));
+                livi_log!("disconnected");
             }
-        })
-        .expect("failed to spawn socket thread");
-}
-
-/// Run `request_blocking` on a worker and deliver the result on the UI thread.
-pub fn request_async<F>(client: Arc<Client>, method: &'static str, params: Value, f: F)
-where
-    F: FnOnce(Result<Value, String>) + Send + 'static,
-{
-    let _ = thread::Builder::new().name(format!("req-{method}")).spawn(move || {
-        let result = client.request_blocking(method, params);
-        let _ = slint::invoke_from_event_loop(move || f(result));
-    });
+            Err(_) => {}
+        }
+        thread::sleep(RETRY);
+    }
 }
