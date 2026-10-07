@@ -49,7 +49,18 @@ struct Ctx {
     client: Client,
     config: Map<String, Value>,
     touch: TouchState,
+    /// The page to return to when core takes the projection away and back.
     back_page: i32,
+    /// The main front core reported last, so only transitions move the pages.
+    last_front: Option<String>,
+    /// The projection size the UI last saw, to apply a change to live sessions.
+    resolution_seen: Option<(u32, u32)>,
+    /// The binding key waiting for a key press, empty when not capturing.
+    capture: Option<String>,
+    /// The key a capture took, so its release is not forwarded to core.
+    captured_release: Option<String>,
+    /// The device list as last built, so patches do not rebuild the model.
+    devices_seen: Option<Value>,
     audio_out_ids: Vec<String>,
     audio_in_ids: Vec<String>,
     save_tx: Sender<(String, Value)>,
@@ -80,6 +91,11 @@ impl Ctx {
             config: Map::new(),
             touch: TouchState::default(),
             back_page: 0,
+            last_front: None,
+            resolution_seen: None,
+            capture: None,
+            captured_release: None,
+            devices_seen: None,
             audio_out_ids: Vec::new(),
             audio_in_ids: Vec::new(),
             save_tx,
@@ -130,9 +146,9 @@ fn run_ui(ui: MainWindow) {
     // Core populates the link speed when asked; re-asserted after every reconnect.
     client.link_speed(true);
 
-    // With nothing projecting yet, open on the shell instead of the (empty)
-    // projection surface. Core's front changes switch pages from there.
-    ui.global::<App>().set_page(1);
+    // Open where upstream's home route is: the projection surface. Its idle
+    // state waits for the phone, and a phone that connects just comes up.
+    ui.global::<App>().set_page(0);
 
     livi_log!("starting Slint event loop");
     if let Err(e) = ui.run() {
@@ -157,9 +173,13 @@ fn handle_core_event(ui: &MainWindow, ctx: &Arc<Mutex<Ctx>>, event: CoreEvent) {
         CoreEvent::Welcome { version, state, .. } => {
             app.set_version_text(version.into());
             apply_state(ui, ctx, &state);
-            report_front(ui, ctx);
+            report_shown(ui, ctx);
         }
         CoreEvent::Patch { state, .. } => apply_state(ui, ctx, &state),
+        CoreEvent::Spectrum(bands) => {
+            let values: Vec<f32> = bands.into_iter().map(|b| b.clamp(0.0, 1.0)).collect();
+            app.set_spectrum(ModelRc::new(VecModel::from(values)));
+        }
         CoreEvent::Refused(reason) => {
             app.set_status_message(format!("core refused: {reason}").into());
         }
@@ -174,7 +194,17 @@ fn apply_state(ui: &MainWindow, ctx: &Arc<Mutex<Ctx>>, state: &Value) {
         apply_settings(ui, ctx, config);
     }
     if let Some(devices) = state.get("devices") {
-        set_devices(ui, devices);
+        // Only a changed list rebuilds the model; a patch at telemetry rate
+        // must not reset the list's scroll position.
+        let changed = {
+            let mut ctx = ctx.lock().unwrap();
+            let changed = ctx.devices_seen.as_ref() != Some(devices);
+            ctx.devices_seen = Some(devices.clone());
+            changed
+        };
+        if changed {
+            set_devices(ui, devices);
+        }
     }
     if let Some(now_playing) = state.get("nowPlaying") {
         apply_now_playing(ui, now_playing);
@@ -203,27 +233,44 @@ fn apply_state(ui: &MainWindow, ctx: &Arc<Mutex<Ctx>>, state: &Value) {
     sync_indexes(ui, ctx);
 }
 
-/// What core put in front on the main screen decides the page. Its own moves
-/// (a call, Siri, the phone handing the screen back) are followed, and the
-/// user's page is remembered for when the projection leaves again.
+/// Core's main front moves the pages, like upstream's prevFrontRef effect:
+/// projection brings the surface up (remembering where the user was), leaving
+/// it goes back only while a phone is still connected. On a disconnected phone
+/// the UI stays on the projection surface, so the next connect comes up by
+/// itself.
 fn apply_front(ui: &MainWindow, ctx: &Arc<Mutex<Ctx>>, front: &str) {
     let app = ui.global::<App>();
     let projection = front == "projection";
     app.set_projection_shown(projection);
     app.set_streaming(projection);
+
+    // The first value is only a baseline, like upstream's prevFrontRef
+    // starting undefined.
+    let changed = {
+        let mut ctx = ctx.lock().unwrap();
+        let prev = ctx.last_front.replace(front.to_string());
+        prev.is_some() && prev.as_deref() != Some(front)
+    };
+    if !changed {
+        return;
+    }
     if projection {
         if app.get_page() != 0 {
-            let mut ctx = ctx.lock().unwrap();
-            if ctx.back_page == 0 {
-                ctx.back_page = app.get_page();
-            }
-            drop(ctx);
+            ctx.lock().unwrap().back_page = app.get_page();
             app.set_page(0);
+            report_shown(ui, ctx);
         }
-    } else if app.get_page() == 0 {
-        let back = ctx.lock().unwrap().back_page;
-        app.set_page(if back > 0 { back } else { 1 });
+        return;
     }
+    if app.get_page() != 0 || !app.get_projection_active() {
+        return;
+    }
+    let back = {
+        let mut ctx = ctx.lock().unwrap();
+        std::mem::take(&mut ctx.back_page)
+    };
+    app.set_page(if back > 0 { back } else { 2 });
+    report_shown(ui, ctx);
 }
 
 fn apply_sessions(ui: &MainWindow, sessions: &Value) {
@@ -248,6 +295,107 @@ fn apply_telemetry(ui: &MainWindow, telemetry: &Value) {
         Some(speed) => format!("{speed:.0} km/h").into(),
         None => "".into(),
     });
+    app.set_gps_data(ModelRc::new(VecModel::from(gps_data_rows(telemetry))));
+    app.set_gps_hw(ModelRc::new(VecModel::from(gps_hw_rows(telemetry))));
+}
+
+fn info_row(label: &str, value: impl Into<SharedString>) -> InfoRow {
+    InfoRow { label: label.into(), value: value.into() }
+}
+
+fn number(value: Option<f64>, unit: &str, decimals: usize) -> String {
+    match value {
+        Some(v) => format!("{v:.decimals$}{unit}"),
+        None => "—".to_string(),
+    }
+}
+
+/// Settings → General → GPS → GPS data, from the telemetry `gps`/`gnss` blocks.
+fn gps_data_rows(telemetry: &Value) -> Vec<InfoRow> {
+    let gps = telemetry.get("gps");
+    let gnss = telemetry.get("gnss");
+    let fix = |key: &str| gps.and_then(|g| g.get(key)).and_then(Value::as_f64);
+    let state = |key: &str| gnss.and_then(|g| g.get(key));
+
+    let mut rows = Vec::new();
+    let connected = state("connected").and_then(Value::as_bool).unwrap_or(false);
+    rows.push(info_row("Status", if connected { "connected" } else { "disconnected" }));
+    if let Some(error) = state("error").and_then(Value::as_str) {
+        rows.push(info_row("Error", error.to_string()));
+    }
+    let quality = state("fixQuality").and_then(Value::as_str).unwrap_or("none");
+    let mode = state("fixMode").and_then(Value::as_str).unwrap_or("none");
+    rows.push(info_row("Fix", format!("{quality} · {mode}")));
+    let used = state("satellitesUsed").and_then(Value::as_f64).unwrap_or(0.0);
+    let visible = state("satellitesVisible").and_then(Value::as_u64).unwrap_or(0);
+    rows.push(info_row("Satellites", format!("{used:.0} used / {visible} visible")));
+    rows.push(info_row("Latitude", number(fix("lat"), "", 6)));
+    rows.push(info_row("Longitude", number(fix("lng"), "", 6)));
+    rows.push(info_row("Altitude", number(fix("alt"), " m", 0)));
+    rows.push(info_row("Heading", number(fix("heading"), "°", 0)));
+    rows.push(info_row(
+        "Speed",
+        match fix("speedMs") {
+            Some(v) => format!("{:.0} km/h", v * 3.6),
+            None => "—".to_string(),
+        },
+    ));
+    rows.push(info_row("Accuracy", number(fix("accuracyM"), " m", 1)));
+    rows.push(info_row("PDOP", number(state("pdop").and_then(Value::as_f64), "", 1)));
+    rows.push(info_row("HDOP", number(state("hdop").and_then(Value::as_f64), "", 1)));
+    rows.push(info_row("VDOP", number(state("vdop").and_then(Value::as_f64), "", 1)));
+    if let Some(timezone) = state("timezone").and_then(Value::as_str) {
+        rows.push(info_row("Timezone", timezone.to_string()));
+    }
+    rows
+}
+
+/// Settings → General → GPS → HW info, from the u-blox additions.
+fn gps_hw_rows(telemetry: &Value) -> Vec<InfoRow> {
+    let gnss = telemetry.get("gnss");
+    let state = |key: &str| gnss.and_then(|g| g.get(key));
+    let text = |value: Option<&Value>| value.and_then(Value::as_str).unwrap_or("—").to_string();
+
+    let mut rows = Vec::new();
+    rows.push(info_row(
+        "Connected",
+        if state("connected").and_then(Value::as_bool).unwrap_or(false) { "yes" } else { "no" },
+    ));
+    rows.push(info_row("Device", text(state("device"))));
+    rows.push(info_row(
+        "Baud rate",
+        state("baudRate").and_then(Value::as_u64).map(|v| v.to_string()).unwrap_or("—".into()),
+    ));
+    if let Some(constellations) = state("constellations").and_then(Value::as_array) {
+        let names: Vec<&str> = constellations.iter().filter_map(Value::as_str).collect();
+        rows.push(info_row("Constellations", names.join(", ")));
+    }
+    if let Some(version) = state("version") {
+        for (label, key) in [
+            ("Software", "software"),
+            ("Hardware", "hardware"),
+            ("Firmware", "firmware"),
+            ("Model", "model"),
+        ] {
+            if let Some(v) = version.get(key).and_then(Value::as_str) {
+                rows.push(info_row(label, v.to_string()));
+            }
+        }
+    }
+    if let Some(rf) = state("rf") {
+        rows.push(info_row("Antenna", text(rf.get("antennaStatus"))));
+        rows.push(info_row("Antenna power", text(rf.get("antennaPower"))));
+        rows.push(info_row("Jamming", text(rf.get("jamming"))));
+        rows.push(info_row(
+            "Noise",
+            rf.get("noise").and_then(Value::as_u64).map(|v| v.to_string()).unwrap_or("—".into()),
+        ));
+        rows.push(info_row(
+            "AGC",
+            rf.get("agc").and_then(Value::as_u64).map(|v| v.to_string()).unwrap_or("—".into()),
+        ));
+    }
+    rows
 }
 
 fn apply_navigation(ui: &MainWindow, navigation: &Value) {
@@ -287,6 +435,15 @@ fn apply_update(ui: &MainWindow, update: &Value) {
         }
     };
     app.set_update_text(text.into());
+    app.set_update_phase(phase.into());
+    app.set_update_progress(if total > 0.0 {
+        (received / total).clamp(0.0, 1.0) as f32
+    } else {
+        0.0
+    });
+    app.set_update_available(latest.is_some() && phase == "idle");
+    app.set_update_version(latest.unwrap_or("").into());
+    app.set_update_error(error.unwrap_or("").into());
 }
 
 // ---------------------------------------------------------------- settings
@@ -303,14 +460,42 @@ fn get_f32(map: &Map<String, Value>, key: &str) -> Option<f32> {
     map.get(key).and_then(Value::as_f64).map(|v| v as f32)
 }
 
+/// "#rgb", "#rrggbb" and the same with alpha, as the color settings store them.
+fn parse_hex(value: &str) -> Option<slint::Color> {
+    let s = value.trim().trim_start_matches('#');
+    let byte = |i: usize| u8::from_str_radix(&s[i..i + 2], 16).ok();
+    let (r, g, b, a) = match s.len() {
+        3 => {
+            let d = |i: usize| u8::from_str_radix(&s[i..i + 1], 16).ok().map(|v| v * 0x11);
+            (d(0)?, d(1)?, d(2)?, 255)
+        }
+        4 => {
+            let d = |i: usize| u8::from_str_radix(&s[i..i + 1], 16).ok().map(|v| v * 0x11);
+            (d(0)?, d(1)?, d(2)?, d(3)?)
+        }
+        6 => (byte(0)?, byte(2)?, byte(4)?, 255),
+        8 => (byte(0)?, byte(2)?, byte(4)?, byte(6)?),
+        _ => return None,
+    };
+    Some(slint::Color::from_argb_u8(a, r, g, b))
+}
+
 fn apply_settings(ui: &MainWindow, ctx: &Arc<Mutex<Ctx>>, settings: &Value) {
     let Some(map) = settings.as_object().cloned() else {
         return;
     };
     let app = ui.global::<App>();
+    // Most patches carry no config; skip the property churn and the model
+    // rebuilds when nothing in it changed.
+    if app.get_settings_loaded() && ctx.lock().unwrap().config == map {
+        return;
+    }
 
     if let Some(v) = get_str(&map, "carName") {
         app.set_car_name(v.into());
+    }
+    if let Some(v) = get_str(&map, "oemName") {
+        app.set_oem_name(v.into());
     }
     if let Some(v) = get_bool(&map, "autoConn") {
         app.set_auto_conn(v);
@@ -324,8 +509,17 @@ fn apply_settings(ui: &MainWindow, ctx: &Arc<Mutex<Ctx>>, settings: &Value) {
     if let Some(v) = get_str(&map, "wifiPassword") {
         app.set_wifi_password(v.into());
     }
+    if let Some(v) = get_str(&map, "wifiType") {
+        app.set_wifi_type(v.into());
+    }
     if let Some(v) = map.get("wifiChannel").and_then(Value::as_i64) {
         app.set_wifi_channel(v as i32);
+    }
+    if let Some(v) = map.get("wifiChannelWidth").and_then(Value::as_u64) {
+        app.set_wifi_channel_width(v as i32);
+    }
+    if let Some(v) = get_bool(&map, "wifiDedicatedInterface") {
+        app.set_wifi_dedicated_interface(v);
     }
     if let Some(v) = get_str(&map, "country") {
         app.set_country(v.into());
@@ -342,8 +536,40 @@ fn apply_settings(ui: &MainWindow, ctx: &Arc<Mutex<Ctx>>, settings: &Value) {
     if let Some(v) = get_f32(&map, "displayBrightness") {
         app.set_display_brightness(v.clamp(0.0, 1.0));
     }
+    if let Some(v) = get_bool(&map, "displayBrightnessAuto") {
+        app.set_display_brightness_auto(v);
+    }
+    if let Some(v) = get_str(&map, "appearanceMode") {
+        app.set_appearance_mode(v.into());
+    }
+    let width = map.get("projectionWidth").and_then(Value::as_u64);
+    let height = map.get("projectionHeight").and_then(Value::as_u64);
+    if let Some(v) = width {
+        app.set_projection_width(v as f32);
+    }
+    if let Some(v) = height {
+        app.set_projection_height(v as f32);
+    }
+    if let (Some(w), Some(h)) = (width, height) {
+        let current = (w as u32, h as u32);
+        let changed = {
+            let mut ctx = ctx.lock().unwrap();
+            let changed = ctx.resolution_seen.is_some_and(|seen| seen != current);
+            ctx.resolution_seen = Some(current);
+            changed
+        };
+        // A running phone negotiated its stream at the old size. Restart the
+        // helper and drop the sessions so it reconnects with the new one.
+        if changed && app.get_projection_active() {
+            livi_log!("projection size changed -> applying settings");
+            ctx.lock().unwrap().client.act(Action::ApplySettings);
+        }
+    }
     if let Some(v) = get_f32(&map, "huVolume") {
         app.set_hu_volume(v.clamp(0.0, 1.0));
+    }
+    if let Some(v) = get_bool(&map, "huVolumeLinkSystem") {
+        app.set_hu_volume_link_system(v);
     }
     if let Some(v) = get_f32(&map, "audioVolume") {
         app.set_audio_volume(v.clamp(0.0, 1.0));
@@ -357,11 +583,26 @@ fn apply_settings(ui: &MainWindow, ctx: &Arc<Mutex<Ctx>>, settings: &Value) {
     if let Some(v) = get_f32(&map, "callVolume") {
         app.set_call_volume(v.clamp(0.0, 1.0));
     }
+    if let Some(v) = get_f32(&map, "systemSoundsVolume") {
+        app.set_system_sounds_volume(v.clamp(0.0, 1.0));
+    }
+    if let Some(v) = map.get("samplingFrequency").and_then(Value::as_u64) {
+        app.set_sampling_frequency(v as i32);
+    }
+    if let Some(v) = get_bool(&map, "disableAudioOutput") {
+        app.set_disable_audio_output(v);
+    }
     if let Some(v) = get_str(&map, "audioOutputDevice") {
         app.set_audio_output_device(v.into());
     }
+    if let Some(v) = get_str(&map, "audioOutputDeviceLabel") {
+        app.set_audio_output_label(v.into());
+    }
     if let Some(v) = get_str(&map, "audioInputDevice") {
         app.set_audio_input_device(v.into());
+    }
+    if let Some(v) = get_str(&map, "audioInputDeviceLabel") {
+        app.set_audio_input_label(v.into());
     }
     if let Some(v) = get_str(&map, "language") {
         app.set_language(v.into());
@@ -371,6 +612,163 @@ fn apply_settings(ui: &MainWindow, ctx: &Arc<Mutex<Ctx>>, settings: &Value) {
     }
     if let Some(v) = get_str(&map, "displayMode") {
         app.set_display_mode(v.into());
+    }
+    if let Some(v) = map.get("visualAudioDelayMs").and_then(Value::as_u64) {
+        app.set_fft_delay(v as f32);
+    }
+    if let Some(v) = map.get("hand").and_then(Value::as_u64) {
+        app.set_hand(v as i32);
+    }
+    if let Some(v) = get_str(&map, "startPage") {
+        app.set_start_page(v.into());
+    }
+    if let Some(v) = map.get("carPlayMfiI2cBus").and_then(Value::as_u64) {
+        app.set_mfi_i2c_bus(v as f32);
+    }
+    if let Some(v) = map.get("carPlayMfiPowerGpio").and_then(Value::as_i64) {
+        app.set_mfi_power_gpio(v as f32);
+    }
+    if let Some(v) = get_bool(&map, "gpsEnabled") {
+        app.set_gps_enabled(v);
+    }
+    if let Some(v) = get_str(&map, "gpsDevice") {
+        app.set_gps_device(v.into());
+    }
+    if let Some(v) = map.get("gpsBaudRate").and_then(Value::as_u64) {
+        app.set_gps_baud_rate(v as f32);
+    }
+    if let Some(v) = get_f32(&map, "displayGamma") {
+        app.set_display_gamma(v);
+    }
+    if let Some(v) = get_f32(&map, "displayContrast") {
+        app.set_display_contrast(v);
+    }
+    if let Some(v) = get_f32(&map, "displayColorR") {
+        app.set_display_color_r(v);
+    }
+    if let Some(v) = get_f32(&map, "displayColorG") {
+        app.set_display_color_g(v);
+    }
+    if let Some(v) = get_f32(&map, "displayColorB") {
+        app.set_display_color_b(v);
+    }
+    if let Some(v) = get_str(&map, "primaryColorDark") {
+        app.set_primary_color_dark(v.clone().into());
+        app.set_theme_primary_dark(
+            parse_hex(&v).unwrap_or(slint::Color::from_rgb_u8(0x00, 0xad, 0xad)),
+        );
+    }
+    if let Some(v) = get_str(&map, "primaryColorLight") {
+        app.set_primary_color_light(v.clone().into());
+        app.set_theme_primary_light(
+            parse_hex(&v).unwrap_or(slint::Color::from_rgb_u8(0x00, 0x85, 0x85)),
+        );
+    }
+    if let Some(v) = get_str(&map, "highlightColorDark") {
+        app.set_highlight_color_dark(v.clone().into());
+        app.set_theme_highlight_dark(
+            parse_hex(&v).unwrap_or(slint::Color::from_rgb_u8(0x00, 0x94, 0x94)),
+        );
+    }
+    if let Some(v) = get_str(&map, "highlightColorLight") {
+        app.set_highlight_color_light(v.clone().into());
+        app.set_theme_highlight_light(
+            parse_hex(&v).unwrap_or(slint::Color::from_rgb_u8(0x00, 0x75, 0x75)),
+        );
+    }
+    if let Some(v) = get_str(&map, "backgroundColorDark") {
+        app.set_background_color_dark(v.clone().into());
+        app.set_theme_background_dark(
+            parse_hex(&v).unwrap_or(slint::Color::from_rgb_u8(0x00, 0x00, 0x00)),
+        );
+    }
+    if let Some(v) = get_str(&map, "backgroundColorLight") {
+        app.set_background_color_light(v.clone().into());
+        app.set_theme_background_light(
+            parse_hex(&v).unwrap_or(slint::Color::from_rgb_u8(0xd4, 0xd4, 0xd4)),
+        );
+    }
+    if let Some(v) = get_bool(&map, "updateNightly") {
+        app.set_update_nightly(v);
+    }
+
+    // The projection geometry block, all integer settings.
+    let number = |key: &str| map.get(key).and_then(Value::as_u64).map(|v| v as f32);
+    if let Some(v) = number("projectionFps") {
+        app.set_projection_fps(v);
+    }
+    if let Some(v) = number("projectionDpi") {
+        app.set_projection_dpi(v);
+    }
+    if let Some(v) = number("projectionViewAreaTop") {
+        app.set_view_area_top(v);
+    }
+    if let Some(v) = number("projectionViewAreaBottom") {
+        app.set_view_area_bottom(v);
+    }
+    if let Some(v) = number("projectionViewAreaLeft") {
+        app.set_view_area_left(v);
+    }
+    if let Some(v) = number("projectionViewAreaRight") {
+        app.set_view_area_right(v);
+    }
+    if let Some(v) = number("projectionSafeAreaTop") {
+        app.set_safe_area_top(v);
+    }
+    if let Some(v) = number("projectionSafeAreaBottom") {
+        app.set_safe_area_bottom(v);
+    }
+    if let Some(v) = number("projectionSafeAreaLeft") {
+        app.set_safe_area_left(v);
+    }
+    if let Some(v) = number("projectionSafeAreaRight") {
+        app.set_safe_area_right(v);
+    }
+    if let Some(v) = get_bool(&map, "projectionSafeAreaDrawOutside") {
+        app.set_safe_area_draw_outside(v);
+    }
+    if let Some(v) = number("clusterWidth") {
+        app.set_cluster_width(v);
+    }
+    if let Some(v) = number("clusterHeight") {
+        app.set_cluster_height(v);
+    }
+    if let Some(v) = number("clusterFps") {
+        app.set_cluster_fps(v);
+    }
+    if let Some(v) = number("clusterDpi") {
+        app.set_cluster_dpi(v);
+    }
+    if let Some(v) = number("clusterViewAreaTop") {
+        app.set_cluster_view_area_top(v);
+    }
+    if let Some(v) = number("clusterViewAreaBottom") {
+        app.set_cluster_view_area_bottom(v);
+    }
+    if let Some(v) = number("clusterViewAreaLeft") {
+        app.set_cluster_view_area_left(v);
+    }
+    if let Some(v) = number("clusterViewAreaRight") {
+        app.set_cluster_view_area_right(v);
+    }
+    if let Some(v) = number("clusterSafeAreaTop") {
+        app.set_cluster_safe_area_top(v);
+    }
+    if let Some(v) = number("clusterSafeAreaBottom") {
+        app.set_cluster_safe_area_bottom(v);
+    }
+    if let Some(v) = number("clusterSafeAreaLeft") {
+        app.set_cluster_safe_area_left(v);
+    }
+    if let Some(v) = number("clusterSafeAreaRight") {
+        app.set_cluster_safe_area_right(v);
+    }
+
+    if let Some(v) = map.get("bindings") {
+        let changed = ctx.lock().unwrap().config.get("bindings") != Some(v);
+        if changed {
+            app.set_bindings(ModelRc::new(VecModel::from(binding_rows(v))));
+        }
     }
 
     ctx.lock().unwrap().config = map;
@@ -393,7 +791,10 @@ fn apply_system(ui: &MainWindow, ctx: &Arc<Mutex<Ctx>>, system: &Value) {
         app.set_country_options(string_model(string_list(list)));
     }
     if let Some(list) = system.get("displayModes") {
-        app.set_display_mode_options(string_model(string_list(list)));
+        // Upstream offers "Panel default" (the empty mode) first.
+        let mut modes = vec!["Panel default".to_string()];
+        modes.extend(string_list(list));
+        app.set_display_mode_options(string_model(modes));
     }
     if let Some(list) = system.get("audioSinks") {
         let (labels, ids) = audio_options(list);
@@ -431,7 +832,14 @@ fn sync_indexes(ui: &MainWindow, ctx: &Arc<Mutex<Ctx>>) {
     app.set_bt_adapter_index(index_of(&app.get_bt_adapter_options(), &value("btAdapter")));
     app.set_country_index(index_of(&app.get_country_options(), &value("country")));
     app.set_language_index(index_of(&app.get_language_options(), &value("language")));
-    app.set_display_mode_index(index_of(&app.get_display_mode_options(), &value("displayMode")));
+    let display_mode = value("displayMode");
+    app.set_display_mode_index(
+        if display_mode.is_empty() && app.get_display_mode_options().row_count() > 0 {
+            0
+        } else {
+            index_of(&app.get_display_mode_options(), &display_mode)
+        },
+    );
 
     let channel = config
         .get("wifiChannel")
@@ -441,13 +849,17 @@ fn sync_indexes(ui: &MainWindow, ctx: &Arc<Mutex<Ctx>>) {
     app.set_wifi_channel_index(index_of(&app.get_wifi_channel_options(), &channel));
 
     let out_id = value("audioOutputDevice");
-    app.set_audio_output_index(
-        out_ids.iter().position(|id| *id == out_id).map(|i| i as i32).unwrap_or(-1),
-    );
+    app.set_audio_output_index(if out_id.is_empty() && !out_ids.is_empty() {
+        0
+    } else {
+        out_ids.iter().position(|id| *id == out_id).map(|i| i as i32).unwrap_or(-1)
+    });
     let in_id = value("audioInputDevice");
-    app.set_audio_input_index(
-        in_ids.iter().position(|id| *id == in_id).map(|i| i as i32).unwrap_or(-1),
-    );
+    app.set_audio_input_index(if in_id.is_empty() && !in_ids.is_empty() {
+        0
+    } else {
+        in_ids.iter().position(|id| *id == in_id).map(|i| i as i32).unwrap_or(-1)
+    });
 }
 
 fn index_of(model: &ModelRc<SharedString>, value: &str) -> i32 {
@@ -480,8 +892,10 @@ fn number_list(value: &Value) -> Vec<String> {
 }
 
 fn audio_options(value: &Value) -> (Vec<String>, Vec<String>) {
-    let mut labels = Vec::new();
-    let mut ids = Vec::new();
+    // The first entry is the empty id the core treats as "system default",
+    // like upstream's systemDefaultOption.
+    let mut labels = vec!["System default".to_string()];
+    let mut ids = vec![String::new()];
     if let Some(list) = value.as_array() {
         for device in list {
             let id = device.get("id").and_then(Value::as_str).unwrap_or_default().to_string();
@@ -560,6 +974,104 @@ fn device_rows(value: &Value) -> Vec<DeviceRow> {
         });
     }
     rows
+}
+
+// ---------------------------------------------------------------- bindings
+
+/// The bindings upstream's key bindings page lists, in its order.
+const BINDING_ROWS: &[(&str, &str)] = &[
+    ("up", "Up"),
+    ("down", "Down"),
+    ("left", "Left"),
+    ("right", "Right"),
+    ("selectUp", "Select Up"),
+    ("selectDown", "Select Down"),
+    ("back", "Back"),
+    ("knobLeft", "Knob Left"),
+    ("knobRight", "Knob Right"),
+    ("knobUp", "Knob Up"),
+    ("knobDown", "Knob Down"),
+    ("home", "Home"),
+    ("cycleSession", "Cycle Session"),
+    ("playPause", "Play/Pause"),
+    ("play", "Play"),
+    ("pause", "Pause"),
+    ("next", "Next"),
+    ("prev", "Previous"),
+    ("acceptPhone", "Accept Call"),
+    ("rejectPhone", "Reject Call"),
+    ("phoneKey0", "Phone Key 0"),
+    ("phoneKey1", "Phone Key 1"),
+    ("phoneKey2", "Phone Key 2"),
+    ("phoneKey3", "Phone Key 3"),
+    ("phoneKey4", "Phone Key 4"),
+    ("phoneKey5", "Phone Key 5"),
+    ("phoneKey6", "Phone Key 6"),
+    ("phoneKey7", "Phone Key 7"),
+    ("phoneKey8", "Phone Key 8"),
+    ("phoneKey9", "Phone Key 9"),
+    ("phoneKeyStar", "Phone Key *"),
+    ("phoneKeyHash", "Phone Key #"),
+    ("phoneKeyHookSwitch", "Hook Switch"),
+    ("voiceAssistant", "Voice Assistant"),
+    ("voiceAssistantRelease", "Voice Assistant Release"),
+];
+
+fn binding_rows(value: &Value) -> Vec<BindingRow> {
+    BINDING_ROWS
+        .iter()
+        .map(|(key, label)| {
+            let code = value.get(*key).and_then(Value::as_str).unwrap_or("");
+            BindingRow { key: (*key).into(), label: (*label).into(), code: code.into() }
+        })
+        .collect()
+}
+
+/// Slint reports keys as their unicode text (see i-slint-common's key table);
+/// core's bindings are KeyboardEvent.code names. Map the text back.
+fn key_code(text: &str) -> Option<String> {
+    let code = match text {
+        "\u{0008}" => "Backspace",
+        "\u{0009}" => "Tab",
+        "\u{000a}" => "Enter",
+        "\u{001b}" => "Escape",
+        "\u{007f}" => "Delete",
+        "\u{0020}" => "Space",
+        "\u{F700}" => "ArrowUp",
+        "\u{F701}" => "ArrowDown",
+        "\u{F702}" => "ArrowLeft",
+        "\u{F703}" => "ArrowRight",
+        _ => {
+            let mut chars = text.chars();
+            let (first, rest) = (chars.next()?, chars.next());
+            if rest.is_some() {
+                return None;
+            }
+            match first {
+                '\u{F704}'..='\u{F717}' => {
+                    let n = first as u32 - 0xF704 + 1;
+                    return Some(format!("F{n}"));
+                }
+                c if c.is_ascii_alphabetic() => {
+                    return Some(format!("Key{}", c.to_ascii_uppercase()));
+                }
+                c if c.is_ascii_digit() => return Some(format!("Digit{c}")),
+                '-' => "Minus",
+                '=' => "Equal",
+                '[' => "BracketLeft",
+                ']' => "BracketRight",
+                ';' => "Semicolon",
+                '\'' => "Quote",
+                '`' => "Backquote",
+                ',' => "Comma",
+                '.' => "Period",
+                '/' => "Slash",
+                '\\' => "Backslash",
+                _ => return None,
+            }
+        }
+    };
+    Some(code.to_string())
 }
 
 // ---------------------------------------------------------------- media
@@ -670,11 +1182,11 @@ fn wire_callbacks(ui: &MainWindow, ctx: &Arc<Mutex<Ctx>>) {
         let ctx = ctx.clone();
         move |page| {
             if let Some(ui) = weak.upgrade() {
-                let app = ui.global::<App>();
-                app.set_page(page);
-                let ctx = ctx.lock().unwrap();
-                ctx.client.path(page_path(page));
-                ctx.client.act(Action::Show { screen: Screen::Main, front: Front::Livi });
+                ui.global::<App>().set_page(page);
+                // A manual navigation drops the return arm, like upstream
+                // clearing backPathRef whenever the path is not "/".
+                ctx.lock().unwrap().back_page = 0;
+                report_shown(&ui, &ctx);
             }
         }
     });
@@ -684,20 +1196,11 @@ fn wire_callbacks(ui: &MainWindow, ctx: &Arc<Mutex<Ctx>>) {
         let ctx = ctx.clone();
         move || {
             if let Some(ui) = weak.upgrade() {
-                let app = ui.global::<App>();
-                // With no phone the core never showed the video plane, so jumping
-                // to the projection surface would trap the user on a black page.
-                if !app.get_projection_active() {
-                    app.set_page(1);
-                    let ctx = ctx.lock().unwrap();
-                    ctx.client.path(page_path(1));
-                    return;
-                }
-                app.set_page(0);
-                let ctx = ctx.lock().unwrap();
-                ctx.client.act(Action::Show { screen: Screen::Main, front: Front::Projection });
-                ctx.client.path("/");
-                send_key(&ctx, "home");
+                // Upstream's home tab always shows the projection surface; the
+                // idle state waits there and core presses the phone's home
+                // button when the projection actually comes forward.
+                ui.global::<App>().set_page(0);
+                report_shown(&ui, &ctx);
             }
         }
     });
@@ -713,11 +1216,17 @@ fn wire_callbacks(ui: &MainWindow, ctx: &Arc<Mutex<Ctx>>) {
     });
 
     app.on_select_device({
+        let weak = ui.as_weak();
         let ctx = ctx.clone();
         move |id| {
-            let ctx = ctx.lock().unwrap();
             livi_log!("select device {id}");
-            ctx.client.act(Action::SelectDevice { id: id.to_string() });
+            ctx.lock().unwrap().client.act(Action::SelectDevice { id: id.to_string() });
+            if let Some(ui) = weak.upgrade() {
+                // Upstream: picking a phone goes straight to the projection.
+                ctx.lock().unwrap().back_page = 0;
+                ui.global::<App>().set_page(0);
+                report_shown(&ui, &ctx);
+            }
         }
     });
 
@@ -731,11 +1240,18 @@ fn wire_callbacks(ui: &MainWindow, ctx: &Arc<Mutex<Ctx>>) {
     });
 
     app.on_connect_device({
+        let weak = ui.as_weak();
         let ctx = ctx.clone();
         move |id| {
-            let ctx = ctx.lock().unwrap();
             livi_log!("connect device {id}");
-            ctx.client.act(Action::ConnectDevice { id: id.to_string() });
+            ctx.lock().unwrap().client.act(Action::ConnectDevice { id: id.to_string() });
+            if let Some(ui) = weak.upgrade() {
+                // Waking a phone is a request to see it: wait on the projection
+                // surface and it comes up when the session lands.
+                ctx.lock().unwrap().back_page = 0;
+                ui.global::<App>().set_page(0);
+                report_shown(&ui, &ctx);
+            }
         }
     });
 
@@ -803,6 +1319,51 @@ fn wire_callbacks(ui: &MainWindow, ctx: &Arc<Mutex<Ctx>>) {
                         queue_setting(&ctx, key, json!(number));
                     }
                 }
+                // Selects whose option labels differ from the config value.
+                "wifiType" => {
+                    let raw = if value.starts_with("2.4") { "2.4ghz" } else { "5ghz" };
+                    queue_setting(&ctx, key, json!(raw));
+                }
+                "wifiChannelWidth" => {
+                    let width = value.split_whitespace().next().unwrap_or("").parse::<i64>();
+                    if let Ok(width) = width {
+                        queue_setting(&ctx, key, json!(width));
+                    }
+                }
+                "samplingFrequency" => {
+                    let index = if value.starts_with("44.1") { 0 } else { 1 };
+                    queue_setting(&ctx, key, json!(index));
+                }
+                "appearanceMode" => {
+                    let raw = match value.as_str() {
+                        "Day" => "day",
+                        "Night" => "night",
+                        _ => "auto",
+                    };
+                    queue_setting(&ctx, key, json!(raw));
+                }
+                "hand" => {
+                    let hand = if value == "RHD" { 1 } else { 0 };
+                    queue_setting(&ctx, key, json!(hand));
+                }
+                "gpsBaudRate" => {
+                    if let Ok(baud) = value.parse::<i64>() {
+                        queue_setting(&ctx, key, json!(baud));
+                    }
+                }
+                "startPage" => {
+                    let path = match value.as_str() {
+                        "Devices" => "/devices",
+                        "Media" => "/media",
+                        "Settings" => "/settings",
+                        _ => "/",
+                    };
+                    queue_setting(&ctx, key, json!(path));
+                }
+                "displayMode" => {
+                    let raw = if value == "Panel default" { "" } else { value.as_str() };
+                    queue_setting(&ctx, key, json!(raw));
+                }
                 "audioOutputDevice" | "audioInputDevice" => {
                     if let Some(ui) = weak.upgrade() {
                         let app = ui.global::<App>();
@@ -843,7 +1404,45 @@ fn wire_callbacks(ui: &MainWindow, ctx: &Arc<Mutex<Ctx>>) {
     app.on_set_number({
         let ctx = ctx.clone();
         move |key, value| {
-            queue_setting(&ctx, key.to_string(), json!(value));
+            let key = key.to_string();
+            // Integer fields in the core's config; the volumes, brightness and
+            // the display calibration stay fractional.
+            let integer = matches!(
+                key.as_str(),
+                "projectionWidth"
+                    | "projectionHeight"
+                    | "projectionFps"
+                    | "projectionDpi"
+                    | "projectionViewAreaTop"
+                    | "projectionViewAreaBottom"
+                    | "projectionViewAreaLeft"
+                    | "projectionViewAreaRight"
+                    | "projectionSafeAreaTop"
+                    | "projectionSafeAreaBottom"
+                    | "projectionSafeAreaLeft"
+                    | "projectionSafeAreaRight"
+                    | "clusterWidth"
+                    | "clusterHeight"
+                    | "clusterFps"
+                    | "clusterDpi"
+                    | "clusterViewAreaTop"
+                    | "clusterViewAreaBottom"
+                    | "clusterViewAreaLeft"
+                    | "clusterViewAreaRight"
+                    | "clusterSafeAreaTop"
+                    | "clusterSafeAreaBottom"
+                    | "clusterSafeAreaLeft"
+                    | "clusterSafeAreaRight"
+                    | "visualAudioDelayMs"
+                    | "carPlayMfiI2cBus"
+                    | "carPlayMfiPowerGpio"
+                    | "gpsBaudRate"
+                    | "wifiChannelWidth"
+                    | "hand"
+                    | "samplingFrequency"
+            );
+            let value = if integer { json!(value.round() as i64) } else { json!(value) };
+            queue_setting(&ctx, key, value);
         }
     });
 
@@ -877,6 +1476,94 @@ fn wire_callbacks(ui: &MainWindow, ctx: &Arc<Mutex<Ctx>>) {
             ctx.lock().unwrap().client.act(Action::Quit);
         }
     });
+
+    app.on_update_action({
+        let ctx = ctx.clone();
+        move |action| {
+            let action = match action.as_str() {
+                "check" => Action::CheckUpdate,
+                "download" => Action::DownloadUpdate,
+                "install" => Action::InstallUpdate,
+                "abort" => Action::AbortUpdate,
+                _ => return,
+            };
+            ctx.lock().unwrap().client.act(action);
+        }
+    });
+
+    app.on_key_event({
+        let weak = ui.as_weak();
+        let ctx = ctx.clone();
+        move |text, down, repeat| {
+            let Some(code) = key_code(&text) else {
+                return;
+            };
+            // Swallow the release of a key that was just captured.
+            {
+                let mut guard = ctx.lock().unwrap();
+                if !down && guard.captured_release.as_deref() == Some(code.as_str()) {
+                    guard.captured_release = None;
+                    return;
+                }
+            }
+            // A binding row waiting for a key: take this one, send nothing.
+            let capturing = {
+                let mut ctx = ctx.lock().unwrap();
+                match ctx.capture.take() {
+                    Some(binding) => {
+                        if down {
+                            let mut changed = Map::new();
+                            changed.insert(binding, json!(code));
+                            let _ =
+                                ctx.save_tx.send(("bindings".to_string(), Value::Object(changed)));
+                            ctx.captured_release = Some(code.clone());
+                        }
+                        true
+                    }
+                    None => false,
+                }
+            };
+            if capturing {
+                if let Some(ui) = weak.upgrade() {
+                    ui.global::<App>().set_capture_binding("".into());
+                }
+                return;
+            }
+            // The one key upstream suppresses repeats for.
+            if repeat && down && code == "KeyV" {
+                return;
+            }
+            let ctx = ctx.lock().unwrap();
+            ctx.client.input(Input::Key { code, down });
+        }
+    });
+
+    app.on_begin_capture({
+        let weak = ui.as_weak();
+        let ctx = ctx.clone();
+        move |binding| {
+            ctx.lock().unwrap().capture = Some(binding.to_string());
+            if let Some(ui) = weak.upgrade() {
+                ui.global::<App>().set_capture_binding(binding);
+            }
+        }
+    });
+
+    app.on_clear_binding({
+        let ctx = ctx.clone();
+        move |binding| {
+            let mut changed = Map::new();
+            changed.insert(binding.to_string(), json!(""));
+            queue_setting(&ctx, "bindings".to_string(), Value::Object(changed));
+        }
+    });
+
+    app.on_set_color({
+        let ctx = ctx.clone();
+        move |key, value| {
+            queue_setting(&ctx, key.to_string(), json!(value.to_string()));
+        }
+    });
 }
 
 fn page_path(page: i32) -> &'static str {
@@ -894,28 +1581,18 @@ fn queue_setting(ctx: &Arc<Mutex<Ctx>>, key: String, value: Value) {
     }
 }
 
-/// Sends the code the bindings map to `name` as a press and release, so core
-/// runs it like a physical key.
-fn send_key(ctx: &Ctx, name: &str) {
-    let code = ctx
-        .config
-        .get("bindings")
-        .and_then(|bindings| bindings.get(name))
-        .and_then(Value::as_str)
-        .filter(|code| !code.is_empty());
-    if let Some(code) = code {
-        ctx.client.input(Input::Key { code: code.to_string(), down: true });
-        ctx.client.input(Input::Key { code: code.to_string(), down: false });
-    }
-}
-
-/// Re-asserts what core should have in front for the page the UI is on, after
-/// a reconnect or a resync.
-fn report_front(ui: &MainWindow, ctx: &Arc<Mutex<Ctx>>) {
-    let front = if ui.global::<App>().get_page() == 0 { Front::Projection } else { Front::Livi };
+/// Reports what main shows, like upstream's reportShown: the projection page
+/// wants the projection in front, every other page wants the LIVI UI. Core
+/// uses this to hide the plane and to know where the phone resumes. Sent on
+/// every page change and re-asserted after a core reconnect.
+fn report_shown(ui: &MainWindow, ctx: &Arc<Mutex<Ctx>>) {
+    let app = ui.global::<App>();
+    let front = if app.get_page() == 0 { Front::Projection } else { Front::Livi };
     let ctx = ctx.lock().unwrap();
     ctx.client.act(Action::Show { screen: Screen::Main, front });
-    ctx.client.path(page_path(ui.global::<App>().get_page()));
+    ctx.client.path(page_path(app.get_page()));
+    // Only the media page draws the FFT, so only it asks for the bands.
+    ctx.client.spectrum(app.get_page() == 2);
 }
 
 // ---------------------------------------------------------------- touch
@@ -937,9 +1614,9 @@ fn send_pointer(ctx: &Ctx, x: f32, y: f32, w: f32, h: f32, phase: Phase) {
 fn reveal_shell(ui: &MainWindow, ctx: &Arc<Mutex<Ctx>>) {
     livi_log!("edge swipe -> showing shell");
     ui.global::<App>().set_page(1);
-    let ctx = ctx.lock().unwrap();
-    ctx.client.act(Action::Show { screen: Screen::Main, front: Front::Livi });
-    ctx.client.path(page_path(1));
+    // The swipe is a manual navigation, so no return arm is kept.
+    ctx.lock().unwrap().back_page = 0;
+    report_shown(ui, ctx);
 }
 
 fn on_pointer(ui: &MainWindow, ctx: &Arc<Mutex<Ctx>>, kind: i32, x: f32, y: f32, w: f32, h: f32) {

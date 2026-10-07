@@ -61,7 +61,7 @@ export component MediaPage inherits Rectangle {
         }
 
         if (App.media.available) : Rectangle {
-            height: root.height - 148px;
+            height: root.height - (App.spectrum.length > 0 ? 208px : 148px);
 
             HorizontalLayout {
                 x: 0;
@@ -142,6 +142,19 @@ export component MediaPage inherits Rectangle {
                         vertical-alignment: center;
                     }
                 }
+            }
+        }
+
+        if (App.media.available && App.spectrum.length > 0) : HorizontalLayout {
+            height: 48px;
+            spacing: 2px;
+            cross-axis-alignment: end;
+
+            for level in App.spectrum : Rectangle {
+                horizontal-stretch: 1;
+                height: max(2px, 48px * clamp(level, 0.0, 1.0));
+                border-radius: 1px;
+                background: Theme.highlight;
             }
         }
 

@@ -2,7 +2,7 @@
 // SettingsDeviceRow composition (protocol marker, name, transport badge,
 // battery, signal, status dot, forget), plus the session actions.
 
-import { ScrollView } from "std-widgets.slint";
+import { ListView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { App } from "common.slint";
 import { Card, Header, LiviButton, LiviIconButton, Row, RowIcon, RowLabel } from "controls.slint";
@@ -136,6 +136,14 @@ component TransportBadge inherits Rectangle {
 export component DevicesPage inherits Rectangle {
     background: Theme.background;
 
+    // The scroll view of the other pages cannot be used here: Slint does not
+    // size a ScrollView from a layout that contains a `for` loop, and the page
+    // then lays out as a blank surface (slint-ui/slint#407). The device list
+    // scrolls in its own ListView, the page itself stays fixed.
+    property <length> list-height: App.devices.length == 0
+        ? 72px
+        : min(52px * App.devices.length, 312px);
+
     VerticalLayout {
         x: 0;
         y: 0;
@@ -152,17 +160,32 @@ export component DevicesPage inherits Rectangle {
             title: "Devices";
         }
 
-        ScrollView {
+        VerticalLayout {
             vertical-stretch: 1;
-            vertical-scrollbar-policy: ScrollBarPolicy.always-off;
+            spacing: 14px;
 
-            VerticalLayout {
-                spacing: 14px;
+            Card {
+                height: root.list-height;
 
-                Card {
+                if (App.devices.length == 0) : Text {
+                    text: "No paired devices";
+                    color: Theme.text-secondary;
+                    font-family: Theme.font-family;
+                    font-size: 16px;
+                    height: 72px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+
+                if (App.devices.length > 0) : ListView {
                     for device[i] in App.devices : Row {
                         divider: i < App.devices.length - 1;
                         opacity: device.status == "offline" ? 0.45 : 1.0;
+                        clicked => {
+                            if (device.status != "offline") {
+                                App.select-device(device.id);
+                            }
+                        }
 
                         RowIcon {
                             if (device.protocol == "carplay") : IconDevices {
@@ -230,55 +253,45 @@ export component DevicesPage inherits Rectangle {
                             }
                         }
                     }
+                }
+            }
 
-                    if (App.devices.length == 0) : Text {
-                        text: "No paired devices";
-                        color: Theme.text-secondary;
-                        font-family: Theme.font-family;
-                        font-size: 16px;
-                        height: 72px;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
+            Card {
+                Row {
+                    RowIcon {
+                        IconAutoConnect {
+                            width: 100%;
+                            height: 100%;
+                            color: Theme.text-secondary;
+                        }
+                    }
+                    RowLabel {
+                        text: "Cycle session";
+                    }
+                    LiviButton {
+                        text: "CYCLE";
+                        clicked => {
+                            App.cycle-session();
+                        }
                     }
                 }
-
-                Card {
-                    Row {
-                        RowIcon {
-                            IconAutoConnect {
-                                width: 100%;
-                                height: 100%;
-                                color: Theme.text-secondary;
-                            }
-                        }
-                        RowLabel {
-                            text: "Cycle session";
-                        }
-                        LiviButton {
-                            text: "CYCLE";
-                            clicked => {
-                                App.cycle-session();
-                            }
+                Row {
+                    divider: false;
+                    RowIcon {
+                        IconRefresh {
+                            width: 100%;
+                            height: 100%;
+                            color: Theme.text-secondary;
                         }
                     }
-                    Row {
-                        divider: false;
-                        RowIcon {
-                            IconRefresh {
-                                width: 100%;
-                                height: 100%;
-                                color: Theme.text-secondary;
-                            }
-                        }
-                        RowLabel {
-                            text: "Refresh devices";
-                        }
-                        LiviButton {
-                            text: "REFRESH";
-                            outlined: true;
-                            clicked => {
-                                App.refresh-devices();
-                            }
+                    RowLabel {
+                        text: "Refresh devices";
+                    }
+                    LiviButton {
+                        text: "REFRESH";
+                        outlined: true;
+                        clicked => {
+                            App.refresh-devices();
                         }
                     }
                 }

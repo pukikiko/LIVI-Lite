@@ -28,6 +28,17 @@ export struct MediaState {
     progress: float,
 }
 
+export struct BindingRow {
+    key: string,
+    label: string,
+    code: string,
+}
+
+export struct InfoRow {
+    label: string,
+    value: string,
+}
+
 export global App {
     // Navigation: 0 = projection surface, 1 = devices, 2 = media, 3 = settings.
     in-out property <int> page: 0;
@@ -73,27 +84,101 @@ export global App {
     // Settings page.
     in-out property <bool> settings-loaded: false;
     in-out property <string> car-name: "LIVI";
+    in-out property <string> oem-name: "App";
     in-out property <bool> auto-conn: true;
     in-out property <bool> wireless-cp-enabled: false;
     in-out property <bool> wireless-aa-enabled: false;
     in-out property <string> wifi-password: "12345678";
+    in-out property <string> wifi-type: "5ghz";
     in-out property <int> wifi-channel: 36;
+    in-out property <int> wifi-channel-width: 40;
+    in-out property <bool> wifi-dedicated-interface: false;
     in-out property <string> country: "DE";
     in-out property <string> wifi-interface: "";
     in-out property <string> bt-adapter: "";
     in-out property <bool> dark-mode: true;
     in-out property <float> display-brightness: 1.0;
+    in-out property <bool> display-brightness-auto: true;
+    in-out property <string> appearance-mode: "auto";
+    // Projection stream resolution (projectionWidth/Height).
+    in-out property <float> projection-width: 1280;
+    in-out property <float> projection-height: 720;
+    in-out property <float> projection-fps: 60;
+    in-out property <float> projection-dpi: 0;
+    in-out property <float> view-area-top: 0;
+    in-out property <float> view-area-bottom: 0;
+    in-out property <float> view-area-left: 0;
+    in-out property <float> view-area-right: 0;
+    in-out property <float> safe-area-top: 0;
+    in-out property <float> safe-area-bottom: 0;
+    in-out property <float> safe-area-left: 0;
+    in-out property <float> safe-area-right: 0;
+    in-out property <bool> safe-area-draw-outside: true;
+    in-out property <float> cluster-width: 1280;
+    in-out property <float> cluster-height: 720;
+    in-out property <float> cluster-fps: 60;
+    in-out property <float> cluster-dpi: 0;
+    in-out property <float> cluster-view-area-top: 0;
+    in-out property <float> cluster-view-area-bottom: 0;
+    in-out property <float> cluster-view-area-left: 0;
+    in-out property <float> cluster-view-area-right: 0;
+    in-out property <float> cluster-safe-area-top: 60;
+    in-out property <float> cluster-safe-area-bottom: 10;
+    in-out property <float> cluster-safe-area-left: 300;
+    in-out property <float> cluster-safe-area-right: 300;
     in-out property <float> hu-volume: 0.95;
+    in-out property <bool> hu-volume-link-system: true;
     in-out property <float> audio-volume: 0.95;
     in-out property <float> nav-volume: 0.95;
     in-out property <float> voice-assistant-volume: 0.95;
     in-out property <float> call-volume: 0.95;
+    in-out property <float> system-sounds-volume: 0.75;
+    in-out property <int> sampling-frequency: 1;
+    in-out property <bool> disable-audio-output: false;
     in-out property <string> audio-output-device: "";
+    in-out property <string> audio-output-label: "";
     in-out property <string> audio-input-device: "";
+    in-out property <string> audio-input-label: "";
     in-out property <string> language: "en";
     in-out property <bool> debug-logging: false;
     in-out property <string> version-text: "";
     in-out property <string> display-mode: "";
+    in-out property <float> fft-delay: 0;
+    in-out property <int> hand: 0;
+    in-out property <string> start-page: "/";
+    in-out property <float> mfi-i2c-bus: 2;
+    in-out property <float> mfi-power-gpio: -1;
+    in-out property <bool> gps-enabled: false;
+    in-out property <string> gps-device: "";
+    in-out property <float> gps-baud-rate: 38400;
+    in-out property <float> display-gamma: 1.0;
+    in-out property <float> display-contrast: 1.0;
+    in-out property <float> display-color-r: 1.0;
+    in-out property <float> display-color-g: 1.0;
+    in-out property <float> display-color-b: 1.0;
+    in-out property <string> primary-color-dark: "";
+    in-out property <string> primary-color-light: "";
+    in-out property <string> highlight-color-dark: "";
+    in-out property <string> highlight-color-light: "";
+    in-out property <string> background-color-dark: "";
+    in-out property <string> background-color-light: "";
+    // Parsed from the config strings above; the built-in defaults when unset.
+    in-out property <color> theme-primary-dark: #00adad;
+    in-out property <color> theme-primary-light: #008585;
+    in-out property <color> theme-highlight-dark: #009494;
+    in-out property <color> theme-highlight-light: #007575;
+    in-out property <color> theme-background-dark: #000000;
+    in-out property <color> theme-background-light: #d4d4d4;
+    in-out property <bool> update-nightly: false;
+    in-out property <string> update-phase: "idle";
+    in-out property <float> update-progress: 0.0;
+    in-out property <bool> update-available: false;
+    in-out property <string> update-version: "";
+    in-out property <string> update-error: "";
+    // The binding whose key is being captured, empty when none.
+    in-out property <string> capture-binding: "";
+    // FFT bands while the media page draws them.
+    in-out property <[float]> spectrum: [];
 
     // Choice models (filled from the core).
     in-out property <[string]> wifi-interface-options: [];
@@ -104,6 +189,20 @@ export global App {
     in-out property <[string]> audio-input-options: [];
     in-out property <[string]> language-options: ["en", "de", "fr", "es", "it", "nl", "pt", "ru", "ja", "ko", "zh"];
     in-out property <[string]> display-mode-options: [];
+    in-out property <[string]> wifi-type-options: ["2.4 GHz", "5 GHz"];
+    in-out property <[string]> channel-width-options: ["20 MHz", "40 MHz", "80 MHz"];
+    in-out property <[string]> sampling-options: ["44.1 kHz", "48 kHz"];
+    in-out property <[string]> appearance-options: ["Auto", "Day", "Night"];
+    in-out property <[string]> hand-options: ["LHD", "RHD"];
+    in-out property <[string]> baud-options: ["4800", "9600", "19200", "38400", "57600", "115200"];
+    in-out property <[string]> start-page-options: ["Home", "Devices", "Media", "Settings"];
+
+    // Key bindings page.
+    in-out property <[BindingRow]> bindings: [];
+
+    // GPS data / HW info, from the telemetry the core publishes.
+    in-out property <[InfoRow]> gps-data: [];
+    in-out property <[InfoRow]> gps-hw: [];
 
     // Selected indexes for the combo boxes.
     in-out property <int> wifi-interface-index: -1;
@@ -133,4 +232,9 @@ export global App {
     callback refresh-settings();
     callback restart-app();
     callback quit-app();
+    callback update-action(string);
+    callback key-event(string, bool, bool);
+    callback begin-capture(string);
+    callback clear-binding(string);
+    callback set-color(string, string);
 }

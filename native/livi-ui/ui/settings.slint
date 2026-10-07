@@ -2,14 +2,16 @@
 // title plus rounded Paper cards of 52px rows. The root lists the same
 // categories as the original UI; select rows open a full-page option list.
 
-import { ScrollView } from "std-widgets.slint";
+import { ListView, ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { App } from "common.slint";
+import { App, InfoRow } from "common.slint";
 import {
     Card,
     Header,
     LiviButton,
     LiviField,
+    LiviIconButton,
+    LiviNumber,
     LiviSlider,
     LiviSwitch,
     NavRow,
@@ -28,28 +30,35 @@ import {
     IconBluetooth,
     IconBrightness,
     IconBug,
+    IconCable,
     IconCall,
     IconCar,
+    IconCheck,
+    IconClose,
     IconCluster,
     IconContrast,
     IconDarkMode,
     IconDevices,
     IconInfo,
     IconKey,
+    IconLink,
     IconMemory,
     IconMic,
     IconMonitor,
     IconMusicNote,
     IconNavigation,
+    IconPower,
     IconPublic,
     IconRouter,
     IconSmartphone,
     IconSpeaker,
+    IconSpeed,
     IconTranslate,
     IconTune,
     IconUpdate,
     IconVoice,
     IconVolume,
+    IconWidgets,
 } from "icons.slint";
 
 // Page skeleton: header + scrollable stack of cards.
@@ -89,10 +98,51 @@ component PageFrame inherits Rectangle {
     }
 }
 
+// A read-only list of label/value rows, used by GPS data and HW info.
+component InfoList inherits Rectangle {
+    in property <string> title;
+    in property <[InfoRow]> rows;
+    callback back;
+
+    background: Theme.background;
+
+    VerticalLayout {
+        x: 0;
+        y: 0;
+        width: 100%;
+        height: 100%;
+        padding-left: 24px;
+        padding-right: 24px;
+        padding-top: 18px;
+        padding-bottom: 18px;
+        spacing: 10px;
+
+        Header {
+            title: root.title;
+            show-back: true;
+            back => {
+                root.back();
+            }
+        }
+
+        Card {
+            height: min(52px * root.rows.length, root.height - 120px);
+
+            ListView {
+                for r[i] in root.rows : Row {
+                    divider: i < root.rows.length - 1;
+                    RowLabel { text: r.label; }
+                    RowValue { text: r.value; }
+                }
+            }
+        }
+    }
+}
+
 export component SettingsPage inherits Rectangle {
     background: Theme.background;
 
-    // 0 = root category list, 2..6 = open sub-page.
+    // 0 = root category list, 2..6 = open sub-page, 7 bindings, 8/9 GPS info.
     in-out property <int> section: 0;
     // -1 = closed, otherwise the option list for `chooser-key` is shown.
     in-out property <int> chooser: -1;
@@ -151,6 +201,51 @@ export component SettingsPage inherits Rectangle {
             App.audio-input-index = index;
         }
         App.set-string(chooser-key, chooser-options[index]);
+    }
+
+    // Config value <-> option label for the selects whose labels are not the
+    // raw config value. Rust converts the label back on set-string.
+    function wifi-type-label(v: string) -> string {
+        return v == "2.4ghz" ? "2.4 GHz" : "5 GHz";
+    }
+    function wifi-type-index(v: string) -> int {
+        return v == "2.4ghz" ? 0 : 1;
+    }
+    function channel-width-label(v: int) -> string {
+        return v == 20 ? "20 MHz" : (v == 40 ? "40 MHz" : "80 MHz");
+    }
+    function channel-width-index(v: int) -> int {
+        return v == 20 ? 0 : (v == 40 ? 1 : 2);
+    }
+    function sampling-label(v: int) -> string {
+        return v == 0 ? "44.1 kHz" : "48 kHz";
+    }
+    function sampling-index(v: int) -> int {
+        return v == 0 ? 0 : 1;
+    }
+    function appearance-label(v: string) -> string {
+        return v == "day" ? "Day" : (v == "night" ? "Night" : "Auto");
+    }
+    function appearance-index(v: string) -> int {
+        return v == "day" ? 1 : (v == "night" ? 2 : 0);
+    }
+    function hand-label(v: int) -> string {
+        return v == 0 ? "LHD" : "RHD";
+    }
+    function hand-index(v: int) -> int {
+        return v == 0 ? 0 : 1;
+    }
+    function baud-label(v: float) -> string {
+        return "" + round(v);
+    }
+    function baud-index(v: float) -> int {
+        return v == 4800 ? 0 : (v == 9600 ? 1 : (v == 19200 ? 2 : (v == 38400 ? 3 : (v == 57600 ? 4 : 5))));
+    }
+    function start-page-label(v: string) -> string {
+        return v == "/devices" ? "Devices" : (v == "/media" ? "Media" : (v == "/settings" ? "Settings" : "Home"));
+    }
+    function start-page-index(v: string) -> int {
+        return v == "/devices" ? 1 : (v == "/media" ? 2 : (v == "/settings" ? 3 : 0));
     }
 
     // ------------------------------------------------------------- chooser
@@ -235,7 +330,6 @@ export component SettingsPage inherits Rectangle {
             }
             system-entry := NavRow {
                 label: "System";
-                divider: false;
                 IconMemory {
                     width: 100%;
                     height: 100%;
@@ -243,6 +337,18 @@ export component SettingsPage inherits Rectangle {
                 }
                 clicked => {
                     root.section = 6;
+                }
+            }
+            bindings-entry := NavRow {
+                label: "Key bindings";
+                divider: false;
+                IconKey {
+                    width: 100%;
+                    height: 100%;
+                    color: bindings-entry.pressed ? Theme.primary : Theme.text-secondary;
+                }
+                clicked => {
+                    root.section = 7;
                 }
             }
         }
@@ -264,6 +370,17 @@ export component SettingsPage inherits Rectangle {
                     edited(t) => {
                         App.car-name = t;
                         App.set-string("carName", t);
+                    }
+                }
+            }
+            Row {
+                RowIcon { IconTranslate { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "UI name"; }
+                LiviField {
+                    text: App.oem-name;
+                    edited(t) => {
+                        App.oem-name = t;
+                        App.set-string("oemName", t);
                     }
                 }
             }
@@ -316,10 +433,26 @@ export component SettingsPage inherits Rectangle {
                 }
             }
             SelectRow {
+                label: "Wi-Fi frequency";
+                value: root.wifi-type-label(App.wifi-type);
+                clicked => {
+                    root.open-chooser("Wi-Fi frequency", "wifiType", App.wifi-type-options, root.wifi-type-index(App.wifi-type));
+                }
+                RowIcon { IconAntenna { width: 100%; height: 100%; color: Theme.text-secondary; } }
+            }
+            SelectRow {
                 label: "Wi-Fi channel";
                 value: root.option-or(App.wifi-channel-options, App.wifi-channel-index, "" + App.wifi-channel);
                 clicked => {
                     root.open-chooser("Wi-Fi channel", "wifiChannel", App.wifi-channel-options, App.wifi-channel-index);
+                }
+                RowIcon { IconAntenna { width: 100%; height: 100%; color: Theme.text-secondary; } }
+            }
+            SelectRow {
+                label: "Wi-Fi channel width";
+                value: root.channel-width-label(App.wifi-channel-width);
+                clicked => {
+                    root.open-chooser("Wi-Fi channel width", "wifiChannelWidth", App.channel-width-options, root.channel-width-index(App.wifi-channel-width));
                 }
                 RowIcon { IconAntenna { width: 100%; height: 100%; color: Theme.text-secondary; } }
             }
@@ -339,6 +472,17 @@ export component SettingsPage inherits Rectangle {
                 }
                 RowIcon { IconRouter { width: 100%; height: 100%; color: Theme.text-secondary; } }
             }
+            Row {
+                RowIcon { IconRouter { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "Dedicated interface"; }
+                LiviSwitch {
+                    checked: App.wifi-dedicated-interface;
+                    toggled(v) => {
+                        App.wifi-dedicated-interface = v;
+                        App.set-bool("wifiDedicatedInterface", v);
+                    }
+                }
+            }
             SelectRow {
                 label: "Bluetooth adapter";
                 divider: false;
@@ -347,6 +491,125 @@ export component SettingsPage inherits Rectangle {
                     root.open-chooser("Bluetooth adapter", "btAdapter", App.bt-adapter-options, App.bt-adapter-index);
                 }
                 RowIcon { IconBluetooth { width: 100%; height: 100%; color: Theme.text-secondary; } }
+            }
+        }
+
+        Card {
+            SelectRow {
+                label: "Start page";
+                value: root.start-page-label(App.start-page);
+                clicked => {
+                    root.open-chooser("Start page", "startPage", App.start-page-options, root.start-page-index(App.start-page));
+                }
+                RowIcon { IconWidgets { width: 100%; height: 100%; color: Theme.text-secondary; } }
+            }
+            Row {
+                RowIcon { IconSpeed { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "FFT delay"; }
+                LiviNumber {
+                    value <=> App.fft-delay;
+                    minimum: 0;
+                    maximum: 1000;
+                    step: 10;
+                    edited(v) => {
+                        App.set-number("visualAudioDelayMs", v);
+                    }
+                }
+            }
+            SelectRow {
+                label: "Steering wheel position";
+                divider: false;
+                value: root.hand-label(App.hand);
+                clicked => {
+                    root.open-chooser("Steering wheel position", "hand", App.hand-options, root.hand-index(App.hand));
+                }
+                RowIcon { IconNavigation { width: 100%; height: 100%; color: Theme.text-secondary; } }
+            }
+        }
+
+        Card {
+            Row {
+                RowIcon { IconLink { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "MFi I2C bus"; }
+                LiviNumber {
+                    value <=> App.mfi-i2c-bus;
+                    minimum: 0;
+                    maximum: 20;
+                    step: 1;
+                    edited(v) => {
+                        App.set-number("carPlayMfiI2cBus", v);
+                    }
+                }
+            }
+            Row {
+                divider: false;
+                RowIcon { IconPower { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "MFi power pin"; }
+                LiviNumber {
+                    value <=> App.mfi-power-gpio;
+                    minimum: -1;
+                    maximum: 27;
+                    step: 1;
+                    edited(v) => {
+                        App.set-number("carPlayMfiPowerGpio", v);
+                    }
+                }
+            }
+        }
+
+        Card {
+            Row {
+                RowIcon { IconPublic { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "GPS"; }
+                LiviSwitch {
+                    checked: App.gps-enabled;
+                    toggled(v) => {
+                        App.gps-enabled = v;
+                        App.set-bool("gpsEnabled", v);
+                    }
+                }
+            }
+            Row {
+                RowIcon { IconCable { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "GPS device"; }
+                LiviField {
+                    text: App.gps-device;
+                    edited(t) => {
+                        App.gps-device = t;
+                        App.set-string("gpsDevice", t);
+                    }
+                }
+            }
+            SelectRow {
+                label: "GPS baud rate";
+                value: root.baud-label(App.gps-baud-rate);
+                clicked => {
+                    root.open-chooser("GPS baud rate", "gpsBaudRate", App.baud-options, root.baud-index(App.gps-baud-rate));
+                }
+                RowIcon { IconSpeed { width: 100%; height: 100%; color: Theme.text-secondary; } }
+            }
+            gps-data-entry := NavRow {
+                label: "GPS data";
+                IconInfo {
+                    width: 100%;
+                    height: 100%;
+                    color: gps-data-entry.pressed ? Theme.primary : Theme.text-secondary;
+                }
+                clicked => {
+                    root.section = 8;
+                }
+            }
+            gps-hw-entry := NavRow {
+                label: "HW info";
+                divider: false;
+                IconMemory {
+                    width: 100%;
+                    height: 100%;
+                    color: gps-hw-entry.pressed ? Theme.primary : Theme.text-secondary;
+                }
+                clicked => {
+                    root.section = 9;
+                }
             }
         }
     }
@@ -404,7 +667,6 @@ export component SettingsPage inherits Rectangle {
                 }
             }
             Row {
-                divider: false;
                 RowIcon { IconCall { width: 100%; height: 100%; color: Theme.text-secondary; } }
                 RowLabel { text: "Call volume"; }
                 LiviSlider {
@@ -415,12 +677,58 @@ export component SettingsPage inherits Rectangle {
                     }
                 }
             }
+            Row {
+                divider: false;
+                RowIcon { IconSpeaker { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "System sounds volume"; }
+                LiviSlider {
+                    value: App.system-sounds-volume;
+                    changed(v) => {
+                        App.system-sounds-volume = v;
+                        App.set-number("systemSoundsVolume", v);
+                    }
+                }
+            }
+        }
+
+        Card {
+            SelectRow {
+                label: "Sampling frequency";
+                value: root.sampling-label(App.sampling-frequency);
+                clicked => {
+                    root.open-chooser("Sampling frequency", "samplingFrequency", App.sampling-options, root.sampling-index(App.sampling-frequency));
+                }
+                RowIcon { IconMusicNote { width: 100%; height: 100%; color: Theme.text-secondary; } }
+            }
+            Row {
+                RowIcon { IconVolume { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "Link head unit to system volume"; }
+                LiviSwitch {
+                    checked: App.hu-volume-link-system;
+                    toggled(v) => {
+                        App.hu-volume-link-system = v;
+                        App.set-bool("huVolumeLinkSystem", v);
+                    }
+                }
+            }
+            Row {
+                divider: false;
+                RowIcon { IconVolume { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "Disable audio"; }
+                LiviSwitch {
+                    checked: App.disable-audio-output;
+                    toggled(v) => {
+                        App.disable-audio-output = v;
+                        App.set-bool("disableAudioOutput", v);
+                    }
+                }
+            }
         }
 
         Card {
             SelectRow {
                 label: "Audio output";
-                value: root.option-text(App.audio-output-options, App.audio-output-index);
+                value: root.option-or(App.audio-output-options, App.audio-output-index, App.audio-output-label);
                 clicked => {
                     root.open-chooser("Audio output", "audioOutputDevice", App.audio-output-options, App.audio-output-index);
                 }
@@ -429,7 +737,7 @@ export component SettingsPage inherits Rectangle {
             SelectRow {
                 label: "Audio input";
                 divider: false;
-                value: root.option-text(App.audio-input-options, App.audio-input-index);
+                value: root.option-or(App.audio-input-options, App.audio-input-index, App.audio-input-label);
                 clicked => {
                     root.open-chooser("Audio input", "audioInputDevice", App.audio-input-options, App.audio-input-index);
                 }
@@ -455,6 +763,58 @@ export component SettingsPage inherits Rectangle {
                 RowIcon { IconAspectRatio { width: 100%; height: 100%; color: Theme.text-secondary; } }
             }
             Row {
+                RowIcon { IconAspectRatio { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "Resolution width"; }
+                LiviNumber {
+                    value <=> App.projection-width;
+                    minimum: 300;
+                    maximum: 4096;
+                    step: 2;
+                    edited(v) => {
+                        App.set-number("projectionWidth", v);
+                    }
+                }
+            }
+            Row {
+                RowIcon { IconMonitor { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "Resolution height"; }
+                LiviNumber {
+                    value <=> App.projection-height;
+                    minimum: 200;
+                    maximum: 2160;
+                    step: 2;
+                    edited(v) => {
+                        App.set-number("projectionHeight", v);
+                    }
+                }
+            }
+            Row {
+                RowIcon { IconSpeed { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "FPS"; }
+                LiviNumber {
+                    value <=> App.projection-fps;
+                    minimum: 24;
+                    maximum: 120;
+                    step: 1;
+                    edited(v) => {
+                        App.set-number("projectionFps", v);
+                    }
+                }
+            }
+            Row {
+                RowIcon { IconAspectRatio { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "DPI"; }
+                LiviNumber {
+                    value <=> App.projection-dpi;
+                    minimum: 0;
+                    maximum: 500;
+                    step: 1;
+                    edited(v) => {
+                        App.set-number("projectionDpi", v);
+                    }
+                }
+            }
+            Row {
                 divider: false;
                 RowIcon { IconCluster { width: 100%; height: 100%; color: Theme.text-secondary; } }
                 RowLabel { text: "Cluster display"; }
@@ -463,6 +823,289 @@ export component SettingsPage inherits Rectangle {
                     toggled(v) => {
                         App.cluster-on = v;
                         App.cluster-request(v);
+                    }
+                }
+            }
+        }
+
+        Card {
+            Row {
+                RowIcon { IconAspectRatio { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "View area top"; }
+                LiviNumber {
+                    value <=> App.view-area-top;
+                    minimum: 0;
+                    maximum: 1000;
+                    step: 1;
+                    edited(v) => {
+                        App.set-number("projectionViewAreaTop", v);
+                    }
+                }
+            }
+            Row {
+                RowIcon { IconAspectRatio { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "View area bottom"; }
+                LiviNumber {
+                    value <=> App.view-area-bottom;
+                    minimum: 0;
+                    maximum: 1000;
+                    step: 1;
+                    edited(v) => {
+                        App.set-number("projectionViewAreaBottom", v);
+                    }
+                }
+            }
+            Row {
+                RowIcon { IconAspectRatio { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "View area left"; }
+                LiviNumber {
+                    value <=> App.view-area-left;
+                    minimum: 0;
+                    maximum: 1000;
+                    step: 1;
+                    edited(v) => {
+                        App.set-number("projectionViewAreaLeft", v);
+                    }
+                }
+            }
+            Row {
+                divider: false;
+                RowIcon { IconAspectRatio { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "View area right"; }
+                LiviNumber {
+                    value <=> App.view-area-right;
+                    minimum: 0;
+                    maximum: 1000;
+                    step: 1;
+                    edited(v) => {
+                        App.set-number("projectionViewAreaRight", v);
+                    }
+                }
+            }
+        }
+
+        Card {
+            Row {
+                RowIcon { IconMonitor { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "Safe area top"; }
+                LiviNumber {
+                    value <=> App.safe-area-top;
+                    minimum: 0;
+                    maximum: 1000;
+                    step: 1;
+                    edited(v) => {
+                        App.set-number("projectionSafeAreaTop", v);
+                    }
+                }
+            }
+            Row {
+                RowIcon { IconMonitor { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "Safe area bottom"; }
+                LiviNumber {
+                    value <=> App.safe-area-bottom;
+                    minimum: 0;
+                    maximum: 1000;
+                    step: 1;
+                    edited(v) => {
+                        App.set-number("projectionSafeAreaBottom", v);
+                    }
+                }
+            }
+            Row {
+                RowIcon { IconMonitor { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "Safe area left"; }
+                LiviNumber {
+                    value <=> App.safe-area-left;
+                    minimum: 0;
+                    maximum: 1000;
+                    step: 1;
+                    edited(v) => {
+                        App.set-number("projectionSafeAreaLeft", v);
+                    }
+                }
+            }
+            Row {
+                RowIcon { IconMonitor { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "Safe area right"; }
+                LiviNumber {
+                    value <=> App.safe-area-right;
+                    minimum: 0;
+                    maximum: 1000;
+                    step: 1;
+                    edited(v) => {
+                        App.set-number("projectionSafeAreaRight", v);
+                    }
+                }
+            }
+            Row {
+                divider: false;
+                RowIcon { IconAspectRatio { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "Draw outside"; }
+                LiviSwitch {
+                    checked: App.safe-area-draw-outside;
+                    toggled(v) => {
+                        App.safe-area-draw-outside = v;
+                        App.set-bool("projectionSafeAreaDrawOutside", v);
+                    }
+                }
+            }
+        }
+
+        Card {
+            Row {
+                RowIcon { IconCluster { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "Cluster width"; }
+                LiviNumber {
+                    value <=> App.cluster-width;
+                    minimum: 300;
+                    maximum: 4096;
+                    step: 2;
+                    edited(v) => {
+                        App.set-number("clusterWidth", v);
+                    }
+                }
+            }
+            Row {
+                RowIcon { IconCluster { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "Cluster height"; }
+                LiviNumber {
+                    value <=> App.cluster-height;
+                    minimum: 200;
+                    maximum: 2160;
+                    step: 2;
+                    edited(v) => {
+                        App.set-number("clusterHeight", v);
+                    }
+                }
+            }
+            Row {
+                RowIcon { IconSpeed { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "Cluster FPS"; }
+                LiviNumber {
+                    value <=> App.cluster-fps;
+                    minimum: 24;
+                    maximum: 120;
+                    step: 1;
+                    edited(v) => {
+                        App.set-number("clusterFps", v);
+                    }
+                }
+            }
+            Row {
+                RowIcon { IconAspectRatio { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "Cluster DPI"; }
+                LiviNumber {
+                    value <=> App.cluster-dpi;
+                    minimum: 0;
+                    maximum: 500;
+                    step: 1;
+                    edited(v) => {
+                        App.set-number("clusterDpi", v);
+                    }
+                }
+            }
+            Row {
+                RowIcon { IconAspectRatio { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "Cluster view area top"; }
+                LiviNumber {
+                    value <=> App.cluster-view-area-top;
+                    minimum: 0;
+                    maximum: 1000;
+                    step: 1;
+                    edited(v) => {
+                        App.set-number("clusterViewAreaTop", v);
+                    }
+                }
+            }
+            Row {
+                RowIcon { IconAspectRatio { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "Cluster view area bottom"; }
+                LiviNumber {
+                    value <=> App.cluster-view-area-bottom;
+                    minimum: 0;
+                    maximum: 1000;
+                    step: 1;
+                    edited(v) => {
+                        App.set-number("clusterViewAreaBottom", v);
+                    }
+                }
+            }
+            Row {
+                RowIcon { IconAspectRatio { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "Cluster view area left"; }
+                LiviNumber {
+                    value <=> App.cluster-view-area-left;
+                    minimum: 0;
+                    maximum: 1000;
+                    step: 1;
+                    edited(v) => {
+                        App.set-number("clusterViewAreaLeft", v);
+                    }
+                }
+            }
+            Row {
+                RowIcon { IconAspectRatio { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "Cluster view area right"; }
+                LiviNumber {
+                    value <=> App.cluster-view-area-right;
+                    minimum: 0;
+                    maximum: 1000;
+                    step: 1;
+                    edited(v) => {
+                        App.set-number("clusterViewAreaRight", v);
+                    }
+                }
+            }
+            Row {
+                RowIcon { IconMonitor { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "Cluster safe area top"; }
+                LiviNumber {
+                    value <=> App.cluster-safe-area-top;
+                    minimum: 0;
+                    maximum: 1000;
+                    step: 1;
+                    edited(v) => {
+                        App.set-number("clusterSafeAreaTop", v);
+                    }
+                }
+            }
+            Row {
+                RowIcon { IconMonitor { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "Cluster safe area bottom"; }
+                LiviNumber {
+                    value <=> App.cluster-safe-area-bottom;
+                    minimum: 0;
+                    maximum: 1000;
+                    step: 1;
+                    edited(v) => {
+                        App.set-number("clusterSafeAreaBottom", v);
+                    }
+                }
+            }
+            Row {
+                RowIcon { IconMonitor { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "Cluster safe area left"; }
+                LiviNumber {
+                    value <=> App.cluster-safe-area-left;
+                    minimum: 0;
+                    maximum: 1000;
+                    step: 1;
+                    edited(v) => {
+                        App.set-number("clusterSafeAreaLeft", v);
+                    }
+                }
+            }
+            Row {
+                divider: false;
+                RowIcon { IconMonitor { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "Cluster safe area right"; }
+                LiviNumber {
+                    value <=> App.cluster-safe-area-right;
+                    minimum: 0;
+                    maximum: 1000;
+                    step: 1;
+                    edited(v) => {
+                        App.set-number("clusterSafeAreaRight", v);
                     }
                 }
             }
@@ -489,7 +1132,6 @@ export component SettingsPage inherits Rectangle {
                 }
             }
             Row {
-                divider: false;
                 RowIcon { IconBrightness { width: 100%; height: 100%; color: Theme.text-secondary; } }
                 RowLabel { text: "Display brightness"; }
                 LiviSlider {
@@ -497,6 +1139,170 @@ export component SettingsPage inherits Rectangle {
                     changed(v) => {
                         App.display-brightness = v;
                         App.set-number("displayBrightness", v);
+                    }
+                }
+            }
+            Row {
+                RowIcon { IconBrightness { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "Auto brightness"; }
+                LiviSwitch {
+                    checked: App.display-brightness-auto;
+                    toggled(v) => {
+                        App.display-brightness-auto = v;
+                        App.set-bool("displayBrightnessAuto", v);
+                    }
+                }
+            }
+            SelectRow {
+                label: "Phone appearance";
+                divider: false;
+                value: root.appearance-label(App.appearance-mode);
+                clicked => {
+                    root.open-chooser("Phone appearance", "appearanceMode", App.appearance-options, root.appearance-index(App.appearance-mode));
+                }
+                RowIcon { IconDarkMode { width: 100%; height: 100%; color: Theme.text-secondary; } }
+            }
+        }
+
+        Card {
+            Row {
+                RowIcon { IconContrast { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "Primary color dark"; }
+                LiviField {
+                    text: App.primary-color-dark;
+                    edited(t) => {
+                        App.primary-color-dark = t;
+                        App.set-color("primaryColorDark", t);
+                    }
+                }
+            }
+            Row {
+                RowIcon { IconContrast { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "Highlight color dark"; }
+                LiviField {
+                    text: App.highlight-color-dark;
+                    edited(t) => {
+                        App.highlight-color-dark = t;
+                        App.set-color("highlightColorDark", t);
+                    }
+                }
+            }
+            Row {
+                RowIcon { IconContrast { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "Background color dark"; }
+                LiviField {
+                    text: App.background-color-dark;
+                    edited(t) => {
+                        App.background-color-dark = t;
+                        App.set-color("backgroundColorDark", t);
+                    }
+                }
+            }
+            Row {
+                RowIcon { IconContrast { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "Primary color light"; }
+                LiviField {
+                    text: App.primary-color-light;
+                    edited(t) => {
+                        App.primary-color-light = t;
+                        App.set-color("primaryColorLight", t);
+                    }
+                }
+            }
+            Row {
+                RowIcon { IconContrast { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "Highlight color light"; }
+                LiviField {
+                    text: App.highlight-color-light;
+                    edited(t) => {
+                        App.highlight-color-light = t;
+                        App.set-color("highlightColorLight", t);
+                    }
+                }
+            }
+            Row {
+                divider: false;
+                RowIcon { IconContrast { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "Background color light"; }
+                LiviField {
+                    text: App.background-color-light;
+                    edited(t) => {
+                        App.background-color-light = t;
+                        App.set-color("backgroundColorLight", t);
+                    }
+                }
+            }
+        }
+
+        Card {
+            Row {
+                RowIcon { IconContrast { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "Contrast"; }
+                LiviSlider {
+                    value: App.display-contrast;
+                    minimum: 0;
+                    maximum: 2;
+                    percent: false;
+                    changed(v) => {
+                        App.display-contrast = v;
+                        App.set-number("displayContrast", v);
+                    }
+                }
+            }
+            Row {
+                RowIcon { IconContrast { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "Gamma"; }
+                LiviSlider {
+                    value: App.display-gamma;
+                    minimum: 0;
+                    maximum: 2;
+                    percent: false;
+                    changed(v) => {
+                        App.display-gamma = v;
+                        App.set-number("displayGamma", v);
+                    }
+                }
+            }
+            Row {
+                RowIcon { IconContrast { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "Color red"; }
+                LiviSlider {
+                    value: App.display-color-r;
+                    minimum: 0;
+                    maximum: 2;
+                    percent: false;
+                    changed(v) => {
+                        App.display-color-r = v;
+                        App.set-number("displayColorR", v);
+                    }
+                }
+            }
+            Row {
+                RowIcon { IconContrast { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "Color green"; }
+                LiviSlider {
+                    value: App.display-color-g;
+                    minimum: 0;
+                    maximum: 2;
+                    percent: false;
+                    changed(v) => {
+                        App.display-color-g = v;
+                        App.set-number("displayColorG", v);
+                    }
+                }
+            }
+            Row {
+                divider: false;
+                RowIcon { IconContrast { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "Color blue"; }
+                LiviSlider {
+                    value: App.display-color-b;
+                    minimum: 0;
+                    maximum: 2;
+                    percent: false;
+                    changed(v) => {
+                        App.display-color-b = v;
+                        App.set-number("displayColorB", v);
                     }
                 }
             }
@@ -537,10 +1343,72 @@ export component SettingsPage inherits Rectangle {
                 RowValue { text: App.version-text; }
             }
             if (App.update-text != "") : Row {
-                divider: false;
                 RowIcon { IconUpdate { width: 100%; height: 100%; color: Theme.text-secondary; } }
                 RowLabel { text: "Update"; }
                 RowValue { text: App.update-text; color: Theme.primary; }
+            }
+            Row {
+                divider: false;
+                RowIcon { IconUpdate { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                RowLabel { text: "Nightly updates"; }
+                LiviSwitch {
+                    checked: App.update-nightly;
+                    toggled(v) => {
+                        App.update-nightly = v;
+                        App.set-bool("updateNightly", v);
+                    }
+                }
+            }
+        }
+
+        Card {
+            pad: 14px;
+            VerticalLayout {
+                spacing: 10px;
+
+                if (App.update-phase == "download") : Rectangle {
+                    height: 8px;
+                    border-radius: 4px;
+                    background: Theme.rail-track;
+                    clip: true;
+
+                    Rectangle {
+                        width: parent.width * clamp(App.update-progress, 0.0, 1.0);
+                        height: 100%;
+                        border-radius: 4px;
+                        background: Theme.primary;
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: 10px;
+                    LiviButton {
+                        text: "CHECK FOR UPDATES";
+                        outlined: true;
+                        clicked => {
+                            App.update-action("check");
+                        }
+                    }
+                    if (App.update-available) : LiviButton {
+                        text: "DOWNLOAD";
+                        clicked => {
+                            App.update-action("download");
+                        }
+                    }
+                    if (App.update-phase == "ready") : LiviButton {
+                        text: "INSTALL";
+                        clicked => {
+                            App.update-action("install");
+                        }
+                    }
+                    if (App.update-phase == "download") : LiviButton {
+                        text: "ABORT";
+                        outlined: true;
+                        clicked => {
+                            App.update-action("abort");
+                        }
+                    }
+                }
             }
         }
 
@@ -570,6 +1438,82 @@ export component SettingsPage inherits Rectangle {
                         outlined: true;
                         clicked => {
                             App.quit-app();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ------------------------------------------------------------ gps info
+    if (chooser == -1 && section == 8) : InfoList {
+        title: "GPS data";
+        rows: App.gps-data;
+        back => {
+            root.section = 2;
+        }
+    }
+
+    if (chooser == -1 && section == 9) : InfoList {
+        title: "HW info";
+        rows: App.gps-hw;
+        back => {
+            root.section = 2;
+        }
+    }
+
+    // --------------------------------------------------------- key bindings
+    // No ScrollView here: Slint cannot size one that contains a `for` loop
+    // (slint-ui/slint#407). The list scrolls on its own instead.
+    if (chooser == -1 && section == 7) : Rectangle {
+        background: Theme.background;
+
+        VerticalLayout {
+            x: 0;
+            y: 0;
+            width: 100%;
+            height: 100%;
+            padding-left: 24px;
+            padding-right: 24px;
+            padding-top: 18px;
+            padding-bottom: 18px;
+            spacing: 10px;
+
+            Header {
+                title: "Key bindings";
+                show-back: true;
+                back => {
+                    root.section = 0;
+                }
+            }
+
+            Card {
+                height: min(52px * App.bindings.length, root.height - 120px);
+
+                ListView {
+                    for b[i] in App.bindings : Row {
+                        divider: i < App.bindings.length - 1;
+                        clicked => {
+                            App.begin-capture(b.key);
+                        }
+
+                        RowIcon { IconKey { width: 100%; height: 100%; color: Theme.text-secondary; } }
+                        RowLabel { text: b.label; color: Theme.text-primary; }
+                        Text {
+                            text: App.capture-binding == b.key ? "press a key…" : (b.code == "" ? "—" : b.code);
+                            color: App.capture-binding == b.key ? Theme.primary : Theme.text-secondary;
+                            font-family: Theme.font-family;
+                            font-size: Theme.value-font-size;
+                            vertical-alignment: center;
+                            horizontal-alignment: right;
+                        }
+                        if (b.code != "" && App.capture-binding != b.key) : LiviIconButton {
+                            width: 36px;
+                            height: 36px;
+                            clicked => {
+                                App.clear-binding(b.key);
+                            }
+                            IconClose { width: 18px; height: 18px; color: Theme.text-secondary; }
                         }
                     }
                 }

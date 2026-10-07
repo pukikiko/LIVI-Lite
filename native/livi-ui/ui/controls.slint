@@ -24,10 +24,18 @@ export component Card inherits Rectangle {
     }
 }
 
-// 52px row: icon + label on the left, control on the right.
+// 52px row: icon + label on the left, control on the right. The touch area
+// sits below the controls, so taps on empty space can select the row.
 export component Row inherits Rectangle {
     in property <bool> divider: true;
+    callback clicked;
     height: Theme.row-height;
+
+    ta := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
 
     HorizontalLayout {
         x: 0;
@@ -262,14 +270,173 @@ export component LiviField inherits Rectangle {
     }
 }
 
+// MUI number spinner: typed value plus stepper buttons on the right.
+export component LiviNumber inherits Rectangle {
+    in-out property <float> value: 0;
+    in property <float> minimum: 0;
+    in property <float> maximum: 100;
+    in property <float> step: 1;
+    callback edited(float);
+
+    // Set while a stepper is auto-repeating, so the release-click adds no step.
+    property <bool> repeated: false;
+
+    width: 210px;
+    height: 40px;
+    border-radius: 4px;
+    clip: true;
+
+    HorizontalLayout {
+        x: 0;
+        y: 0;
+        width: 100%;
+        height: 100%;
+        spacing: 0;
+
+        input := TextInput {
+            horizontal-stretch: 1;
+            text: "" + round(root.value);
+            input-type: number;
+            color: Theme.text-primary;
+            font-family: Theme.font-family;
+            font-size: 16px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            single-line: true;
+            accepted => {
+                root.commit(input.text);
+            }
+        }
+
+        minus := Rectangle {
+            width: 38px;
+            background: minus-ta.pressed ? Theme.state-hover : transparent;
+
+            Rectangle {
+                x: 0;
+                width: 1px;
+                height: 100%;
+                background: Theme.divider;
+            }
+            Text {
+                text: "−";
+                width: 100%;
+                height: 100%;
+                color: Theme.text-primary;
+                font-family: Theme.font-family;
+                font-size: 22px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            minus-ta := TouchArea {
+                clicked => {
+                    if (!root.repeated) {
+                        root.bump(0 - root.step);
+                    }
+                    root.repeated = false;
+                }
+            }
+        }
+
+        plus := Rectangle {
+            width: 38px;
+            background: plus-ta.pressed ? Theme.state-hover : transparent;
+
+            Rectangle {
+                x: 0;
+                width: 1px;
+                height: 100%;
+                background: Theme.divider;
+            }
+            Text {
+                text: "+";
+                width: 100%;
+                height: 100%;
+                color: Theme.text-primary;
+                font-family: Theme.font-family;
+                font-size: 22px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            plus-ta := TouchArea {
+                clicked => {
+                    if (!root.repeated) {
+                        root.bump(root.step);
+                    }
+                    root.repeated = false;
+                }
+            }
+        }
+    }
+
+    minus-repeat := Timer {
+        interval: 90ms;
+        running: minus-ta.pressed;
+        triggered => {
+            root.repeated = true;
+            root.bump(0 - root.step);
+        }
+    }
+
+    plus-repeat := Timer {
+        interval: 90ms;
+        running: plus-ta.pressed;
+        triggered => {
+            root.repeated = true;
+            root.bump(root.step);
+        }
+    }
+
+    // 1px outline over the stack: MUI outlined field.
+    Rectangle {
+        x: 0;
+        y: 0;
+        width: 100%;
+        height: 100%;
+        background: transparent;
+        border-width: 1px;
+        border-radius: 4px;
+        border-color: input.has-focus ? Theme.text-secondary : Theme.divider;
+    }
+
+    function bounded(v: float) -> float {
+        return min(max(v, root.minimum), root.maximum);
+    }
+
+    function bump(delta: float) {
+        let v = root.bounded(root.value + delta);
+        root.value = v;
+        root.edited(v);
+    }
+
+    function commit(text: string) {
+        if (!text.is-float()) {
+            input.text = "" + round(root.value);
+            return;
+        }
+        let v = root.bounded(round(text.to-float()));
+        root.value = v;
+        root.edited(v);
+    }
+}
+
 // MUI-style pill slider with the value rendered inside the track.
 export component LiviSlider inherits Rectangle {
     in-out property <float> value: 0.5;
     in property <bool> enabled: true;
+    in property <float> minimum: 0;
+    in property <float> maximum: 1;
+    // Volume sliders show percent, calibration sliders the raw value.
+    in property <bool> percent: true;
     callback changed(float);
 
     width: 300px;
     height: 42px;
+
+    property <float> fraction: (root.value - root.minimum) / (root.maximum - root.minimum);
+    property <string> label: root.percent
+        ? "" + round(root.fraction * 100) + "%"
+        : "" + (round(root.value * 100) / 100);
 
     rail := Rectangle {
         width: 100%;
@@ -279,7 +446,7 @@ export component LiviSlider inherits Rectangle {
     }
 
     fill := Rectangle {
-        width: parent.width * clamp(root.value, 0.0, 1.0);
+        width: parent.width * clamp(root.fraction, 0.0, 1.0);
         height: 100%;
         border-radius: 21px;
         background: Theme.primary;
@@ -288,7 +455,7 @@ export component LiviSlider inherits Rectangle {
     Text {
         x: max(12px, fill.width - self.width - 14px);
         height: 100%;
-        text: round(root.value * 100) + "%";
+        text: root.label;
         color: fill.width > self.width + 24px ? #ffffff : Theme.text-primary;
         font-family: Theme.font-family;
         font-size: 17px;
@@ -308,7 +475,8 @@ export component LiviSlider inherits Rectangle {
         if (!root.enabled) {
             return;
         }
-        root.value = clamp(x / root.width, 0.0, 1.0);
+        let f = clamp(x / root.width, 0.0, 1.0);
+        root.value = root.minimum + (root.maximum - root.minimum) * f;
         root.changed(root.value);
     }
 }

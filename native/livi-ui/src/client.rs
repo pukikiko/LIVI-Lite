@@ -50,6 +50,7 @@ pub enum CoreEvent {
     Patch { state: Value },
     Refused(String),
     Connected(bool),
+    Spectrum(Vec<f32>),
 }
 
 struct Shared {
@@ -57,6 +58,7 @@ struct Shared {
     next_id: AtomicU64,
     last_path: Mutex<Option<String>>,
     link_speed: AtomicBool,
+    spectrum: AtomicBool,
 }
 
 #[derive(Clone)]
@@ -72,6 +74,7 @@ impl Client {
                 next_id: AtomicU64::new(1),
                 last_path: Mutex::new(None),
                 link_speed: AtomicBool::new(false),
+                spectrum: AtomicBool::new(false),
             }),
         }
     }
@@ -115,6 +118,11 @@ impl Client {
     pub fn link_speed(&self, on: bool) {
         self.shared.link_speed.store(on, Ordering::Relaxed);
         self.send(ToCore::LinkSpeed { on });
+    }
+
+    pub fn spectrum(&self, on: bool) {
+        self.shared.spectrum.store(on, Ordering::Relaxed);
+        self.send(ToCore::Spectrum { on });
     }
 
     pub fn resync(&self) {
@@ -182,6 +190,9 @@ fn run(client: Client, events: Sender<CoreEvent>) {
                                         if shared.link_speed.load(Ordering::Relaxed) {
                                             client.send(ToCore::LinkSpeed { on: true });
                                         }
+                                        if shared.spectrum.load(Ordering::Relaxed) {
+                                            client.send(ToCore::Spectrum { on: true });
+                                        }
                                     }
                                     FromCore::Patch { rev: r, ops } => match state.as_mut() {
                                         Some(value) if r == rev + 1 => {
@@ -217,7 +228,9 @@ fn run(client: Client, events: Sender<CoreEvent>) {
                                         let _ = events.send(CoreEvent::Refused(reason));
                                         return;
                                     }
-                                    FromCore::Spectrum { .. } => {}
+                                    FromCore::Spectrum { bands } => {
+                                        let _ = events.send(CoreEvent::Spectrum(bands));
+                                    }
                                 }
                             }
                         }

@@ -52,8 +52,10 @@ It is a standalone cross-platform head unit with a native, zero-copy GStreamer v
 > `pre-rust-core-sync` tag.
 >
 > **Limitations of the fork:** dash/aux secondary windows, telemetry dashboards,
-> camera, the custom page, the updater and the AppImage/dmg packaging are not
-> ported yet. Devices, media, settings and projection are. Linux is the target
+> camera, the custom page, the UI icon uploader, UI zoom and the AppImage/dmg
+> packaging are not ported yet. Devices, media (including the FFT visualizer),
+> the settings surface (including key bindings and the GPS data/HW views) and
+> projection are. Linux is the target
 > platform; the macOS video path (upstream draws the plane into the Electron
 > window) has no native-UI counterpart yet.
 
@@ -67,9 +69,10 @@ they do not apply to this fork.
 
 What works here: wired and wireless CarPlay, wired and (on Linux) wireless
 Android Auto, the devices, media, settings and projection screens, display
-calibration, GPS and telemetry plumbing. What is missing: the dash/aux windows,
-the telemetry/dashboards UI and the packaging/updater tooling (see the
-limitations note above).
+calibration, GPS and telemetry plumbing, key bindings with D-pad/rotary input
+and the update check/download/install flow. What is missing: the dash/aux
+windows, the telemetry/dashboards UI, the camera and custom pages and the
+packaging/updater tooling (see the limitations note above).
 
 
 ## Native Connectivity

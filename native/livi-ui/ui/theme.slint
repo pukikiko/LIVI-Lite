@@ -12,7 +12,7 @@ export global Theme {
     out property <bool> dark: App.dark-mode;
 
     // Backgrounds. `card` is the MUI Paper surface (5% white over black in dark).
-    out property <color> background: dark ? #000000 : #d4d4d4;
+    out property <color> background: dark ? App.theme-background-dark : App.theme-background-light;
     out property <color> card: dark ? #0d0d0d : #dedede;
 
     // Text colors.
@@ -22,9 +22,9 @@ export global Theme {
     // Idle nav-rail tabs, like MUI's unselected Tab glyphs.
     out property <color> nav-idle: dark ? #999999 : #666666;
 
-    // Highlight (primary) colors.
-    out property <color> primary: dark ? #00adad : #008585;
-    out property <color> highlight: dark ? #009494 : #007575;
+    // Highlight (primary) colors, overridable in Settings > Appearance.
+    out property <color> primary: dark ? App.theme-primary-dark : App.theme-primary-light;
+    out property <color> highlight: dark ? App.theme-highlight-dark : App.theme-highlight-light;
     out property <color> success: #30fb37;
 
     // Divider colors.

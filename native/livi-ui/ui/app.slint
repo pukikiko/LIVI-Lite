@@ -87,6 +87,7 @@ component Shell inherits Rectangle {
                     height: 48px;
                     spacing: 4px;
                     alignment: center;
+                    cross-axis-alignment: center;
                     Text {
                         text: App.time-text;
                         color: Theme.text-primary;
@@ -192,6 +193,22 @@ export component MainWindow inherits Window {
     height: 720px;
     background: Theme.background;
 
-    if App.page == 0 : ProjectionSurface { }
-    if App.page != 0 : Shell { }
+    // Keys land here first: projection controls, key bindings and the key
+    // capture of the bindings page all run through App.key-event.
+    keys := FocusScope {
+        init => {
+            self.focus();
+        }
+        key-pressed(e) => {
+            App.key-event(e.text, true, e.repeat);
+            return accept;
+        }
+        key-released(e) => {
+            App.key-event(e.text, false, false);
+            return accept;
+        }
+
+        if App.page == 0 : ProjectionSurface { }
+        if App.page != 0 : Shell { }
+    }
 }
