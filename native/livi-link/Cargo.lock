@@ -715,7 +715,6 @@ dependencies = [
  "livi-mdns",
  "livi-net",
  "livi-web",
- "livi-wifi",
  "livi-wifid",
 ]
 

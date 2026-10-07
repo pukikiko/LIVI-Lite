@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::io;
 use std::os::unix::net::UnixDatagram;
 use std::path::{Path, PathBuf};
@@ -62,6 +63,43 @@ impl Client {
         }
         Ok(macs)
     }
+
+    fn attached(ctrl: &Path) -> io::Result<Self> {
+        let client = Self::open(ctrl)?;
+        let attached = client.request("ATTACH")?;
+        if attached.trim() != "OK" {
+            return Err(io::Error::other(format!(
+                "hostapd refused to attach: {}",
+                attached.trim()
+            )));
+        }
+        Ok(client)
+    }
+
+    fn listen(&self, mut on: impl FnMut(Option<Station>) -> bool) -> io::Result<()> {
+        self.sock.set_read_timeout(Some(QUIET))?;
+        let mut buf = [0u8; 4096];
+        loop {
+            match self.sock.recv(&mut buf) {
+                Ok(n) => {
+                    if let Some(station) = event(&String::from_utf8_lossy(&buf[..n]))
+                        && !on(Some(station))
+                    {
+                        return Ok(());
+                    }
+                }
+                Err(e)
+                    if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) =>
+                {
+                    self.sock.send(b"PING")?;
+                    if !on(None) {
+                        return Ok(());
+                    }
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
 }
 
 impl Drop for Client {
@@ -110,32 +148,27 @@ pub fn event(text: &str) -> Option<Station> {
 
 /// `on` also gets `None` after a quiet spell and ends the watch by returning false. An error means
 /// hostapd went away.
-pub fn watch(ctrl: &Path, mut on: impl FnMut(Option<Station>) -> bool) -> io::Result<()> {
-    let client = Client::open(ctrl)?;
-    let attached = client.request("ATTACH")?;
-    if attached.trim() != "OK" {
-        return Err(io::Error::other(format!("hostapd refused to attach: {}", attached.trim())));
+pub fn watch(ctrl: &Path, on: impl FnMut(Option<Station>) -> bool) -> io::Result<()> {
+    Client::attached(ctrl)?.listen(on)
+}
+
+pub fn follow_stations(
+    ctrl: &Path,
+    mut on: impl FnMut(&HashSet<String>) -> bool,
+) -> io::Result<()> {
+    let client = Client::attached(ctrl)?;
+    let mut joined: HashSet<String> = client.stations()?.into_iter().collect();
+    if !on(&joined) {
+        return Ok(());
     }
-    client.sock.set_read_timeout(Some(QUIET))?;
-    let mut buf = [0u8; 4096];
-    loop {
-        match client.sock.recv(&mut buf) {
-            Ok(n) => {
-                if let Some(station) = event(&String::from_utf8_lossy(&buf[..n]))
-                    && !on(Some(station))
-                {
-                    return Ok(());
-                }
-            }
-            Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => {
-                client.sock.send(b"PING")?;
-                if !on(None) {
-                    return Ok(());
-                }
-            }
-            Err(e) => return Err(e),
-        }
-    }
+    client.listen(|station| {
+        match station {
+            Some(Station::Joined(mac)) => joined.insert(mac),
+            Some(Station::Left(mac)) => joined.remove(&mac),
+            None => return true,
+        };
+        on(&joined)
+    })
 }
 
 #[cfg(test)]
@@ -231,6 +264,46 @@ mod tests {
             [
                 Station::Joined("9a:c4:e2:44:5e:0f".into()),
                 Station::Left("9a:c4:e2:44:5e:0f".into())
+            ]
+        );
+    }
+
+    #[test]
+    fn following_starts_from_the_stations_present_and_tracks_every_change() {
+        let (path, server) = socket();
+        let hostapd = std::thread::spawn(move || {
+            let mut buf = [0u8; 64];
+            let mut answer = |reply: &str| {
+                let (_, from) = server.recv_from(&mut buf).unwrap();
+                let to = from.as_pathname().unwrap().to_path_buf();
+                server.send_to(reply.as_bytes(), &to).unwrap();
+                to
+            };
+            answer("OK\n");
+            answer("aa:bb:cc:dd:ee:ff\nflags=[AUTH]\n");
+            let to = answer("");
+            for line in [
+                "<3>AP-STA-CONNECTED 9a:c4:e2:44:5e:0f",
+                "<3>AP-STA-DISCONNECTED aa:bb:cc:dd:ee:ff",
+            ] {
+                server.send_to(line.as_bytes(), &to).unwrap();
+            }
+        });
+        let mut seen = Vec::new();
+        follow_stations(&path, |joined| {
+            let mut macs: Vec<String> = joined.iter().cloned().collect();
+            macs.sort();
+            seen.push(macs);
+            seen.len() < 3
+        })
+        .unwrap();
+        hostapd.join().unwrap();
+        assert_eq!(
+            seen,
+            [
+                vec!["aa:bb:cc:dd:ee:ff"],
+                vec!["9a:c4:e2:44:5e:0f", "aa:bb:cc:dd:ee:ff"],
+                vec!["9a:c4:e2:44:5e:0f"]
             ]
         );
     }

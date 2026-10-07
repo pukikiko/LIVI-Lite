@@ -385,6 +385,7 @@ pub struct Projection {
 #[derive(Debug, Clone, PartialEq)]
 pub enum UiCommand {
     Media(MediaControl),
+    Seek(u32),
     NextDevice,
     ApplySettings,
     SelectDevice(String),
@@ -535,6 +536,7 @@ impl Projection {
                 }
                 Some(command) = asks.commands.recv() => match command {
                     UiCommand::Media(control) => self.media(control),
+                    UiCommand::Seek(ms) => self.seek(ms),
                     UiCommand::NextDevice => self.activate_next(),
                     UiCommand::ApplySettings => self.apply_settings(),
                     UiCommand::SelectDevice(id) => self.select_device(&id),
@@ -1326,6 +1328,12 @@ impl Projection {
 
     fn media(&self, control: MediaControl) {
         self.to_active(Do::Media(control));
+    }
+
+    fn seek(&self, ms: u32) {
+        if let Some(s) = self.active().filter(|s| matches!(s.link, Link::Cp(_))) {
+            self.devices.seek(ms, s.device.bt_mac.clone());
+        }
     }
 
     fn input(&self, input: Input) {
@@ -2936,6 +2944,33 @@ mod tests {
         wr.write_all(b"{\"ok\":true}\n").await.unwrap();
         assert_eq!(tokio::time::timeout(Duration::from_secs(5), heard).await.unwrap(), Ok(()));
         assert!(tokio::time::timeout(Duration::from_millis(200), helper.accept()).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_seek_reaches_the_carplay_phone_in_front_by_its_bluetooth_mac() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+        let mut rig = Rig::new();
+        let helper = tokio::net::UnixListener::bind(rig.dir.0.join("cp-bt.sock")).unwrap();
+        rig.connect(1, false);
+        rig.device(1, false, "AA:BB:CC:DD:EE:FF", "");
+        rig.drain();
+        rig.p.seek(61000);
+
+        let line = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let (conn, _) = helper.accept().await.unwrap();
+                let (rd, mut wr) = conn.into_split();
+                let mut line = String::new();
+                tokio::io::BufReader::new(rd).read_line(&mut line).await.unwrap();
+                wr.write_all(b"{\"ok\":true}\n").await.unwrap();
+                if line.starts_with("seek ") {
+                    return line;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(line, "seek 61000 aa:bb:cc:dd:ee:ff\n");
     }
 
     fn aa_device(id: AaId, model: &str, instance: &str) -> AaEvent {

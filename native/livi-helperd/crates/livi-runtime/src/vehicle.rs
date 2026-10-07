@@ -68,10 +68,26 @@ impl LocationTypes {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Seek {
+    pub ms: u32,
+    pub bt_mac: Option<String>,
+}
+
+impl Seek {
+    pub fn meant_for(&self, phone_bt_mac: Option<&str>) -> bool {
+        match (self.bt_mac.as_deref(), phone_bt_mac) {
+            (Some(target), Some(phone)) => target.eq_ignore_ascii_case(phone),
+            _ => true,
+        }
+    }
+}
+
 /// The sending half, held by the helper state.
 pub struct Vehicle {
     location: watch::Sender<(u64, String)>,
     status: watch::Sender<VehicleStatus>,
+    seek: watch::Sender<(u64, Seek)>,
 }
 
 /// The receiving half, one per session.
@@ -79,6 +95,7 @@ pub struct Vehicle {
 pub struct VehicleFeed {
     pub location: watch::Receiver<(u64, String)>,
     pub status: watch::Receiver<VehicleStatus>,
+    pub seek: watch::Receiver<(u64, Seek)>,
 }
 
 impl Default for Vehicle {
@@ -86,13 +103,33 @@ impl Default for Vehicle {
         Self {
             location: watch::Sender::new((0, String::new())),
             status: watch::Sender::new(VehicleStatus::default()),
+            seek: watch::Sender::new((0, Seek::default())),
         }
     }
 }
 
 impl Vehicle {
     pub fn feed(&self) -> VehicleFeed {
-        VehicleFeed { location: self.location.subscribe(), status: self.status.subscribe() }
+        VehicleFeed {
+            location: self.location.subscribe(),
+            status: self.status.subscribe(),
+            seek: self.seek.subscribe(),
+        }
+    }
+
+    /// `seek <ms> [<bt-mac>]`
+    pub fn push_seek(&self, arg: &str) -> Result<(), String> {
+        let mut words = arg.split_whitespace();
+        let ms: u32 = words
+            .next()
+            .and_then(|w| w.parse().ok())
+            .ok_or_else(|| format!("not a position in ms: {arg:?}"))?;
+        let bt_mac = words.next().map(str::to_string);
+        self.seek.send_modify(|slot| {
+            slot.0 = slot.0.wrapping_add(1);
+            slot.1 = Seek { ms, bt_mac };
+        });
+        Ok(())
     }
 
     /// `location <base64 nmea>`
@@ -182,5 +219,31 @@ mod tests {
         vehicle.push_status(r#"{"range":100}"#).unwrap();
         assert!(!feed.status.has_changed().unwrap());
         assert!(vehicle.push_status("{").is_err());
+    }
+
+    #[test]
+    fn every_seek_wakes_the_feed_even_to_the_same_position() {
+        let vehicle = Vehicle::default();
+        let mut feed = vehicle.feed();
+        vehicle.push_seek("60000").unwrap();
+        assert!(feed.seek.has_changed().unwrap());
+        assert_eq!(feed.seek.borrow_and_update().1, Seek { ms: 60000, bt_mac: None });
+        vehicle.push_seek(" 60000  AA:BB:CC:DD:EE:FF ").unwrap();
+        assert!(feed.seek.has_changed().unwrap());
+        assert_eq!(
+            feed.seek.borrow_and_update().1,
+            Seek { ms: 60000, bt_mac: Some("AA:BB:CC:DD:EE:FF".into()) }
+        );
+        assert!(vehicle.push_seek("1:00").is_err());
+        assert!(vehicle.push_seek("").is_err());
+    }
+
+    #[test]
+    fn a_seek_for_one_phone_skips_the_others() {
+        let to_one = Seek { ms: 1, bt_mac: Some("aa:bb:cc:dd:ee:ff".into()) };
+        assert!(to_one.meant_for(Some("AA:BB:CC:DD:EE:FF")));
+        assert!(!to_one.meant_for(Some("11:22:33:44:55:66")));
+        assert!(to_one.meant_for(None));
+        assert!(Seek { ms: 1, bt_mac: None }.meant_for(Some("11:22:33:44:55:66")));
     }
 }

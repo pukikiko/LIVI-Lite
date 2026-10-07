@@ -16,9 +16,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use livi_wifid::hostapd;
 use livi_wifid::radio::{self, Radio};
 
 const SPI_DEV: &str = "/dev/spidev1.0";
+/// hostapd is gone while Wi-Fi is off and for a moment when it restarts with new settings.
+const HOSTAPD_RETRY: Duration = Duration::from_secs(2);
 const LEDS_DIR: &str = "/sys/class/leds";
 // Chain length, a big-endian u32 on the spidev node. Boards without the property have one LED.
 const LED_COUNT_PROP: &str = "/sys/bus/spi/devices/spi1.0/of_node/livi,led-count";
@@ -184,9 +187,18 @@ fn exists(name: &str) -> bool {
     Path::new(&format!("{STATE_DIR}/{name}")).exists()
 }
 
-/// Counted like the web page counts its clients, so the LED and the page agree.
-fn wifi_client() -> bool {
-    livi_wifi::stations("wlan0").count > 0
+static WIFI_CLIENT: AtomicBool = AtomicBool::new(false);
+
+fn follow_wifi_clients() {
+    let ctrl = hostapd::ctrl("wlan0");
+    loop {
+        let _ = hostapd::follow_stations(&ctrl, |joined| {
+            WIFI_CLIENT.store(!joined.is_empty(), Ordering::Relaxed);
+            true
+        });
+        WIFI_CLIENT.store(false, Ordering::Relaxed);
+        thread::sleep(HOSTAPD_RETRY);
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -435,12 +447,9 @@ fn livid_main() -> std::io::Result<()> {
     let mut cfg = Config::load();
     let mut cfg_mtime = mtime(CONFIG_PATH);
     let mut tick: u64 = 0;
-    let mut client = false;
+    thread::spawn(follow_wifi_clients);
 
     loop {
-        if tick.is_multiple_of(TICK_HZ) {
-            client = wifi_client();
-        }
         if RELOAD.swap(false, Ordering::SeqCst) {
             cfg = Config::load();
         }
@@ -450,7 +459,7 @@ fn livid_main() -> std::io::Result<()> {
             cfg = Config::load();
         }
 
-        leds.show(&State::read(client), &cfg, tick);
+        leds.show(&State::read(WIFI_CLIENT.load(Ordering::Relaxed)), &cfg, tick);
 
         let start = Instant::now();
         thread::sleep(TICK.saturating_sub(start.elapsed()));

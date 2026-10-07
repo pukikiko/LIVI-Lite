@@ -81,6 +81,11 @@ pub enum Action {
     Media {
         control: MediaControl,
     },
+    /// CarPlay only
+    #[serde(rename_all = "camelCase")]
+    Seek {
+        position_ms: u32,
+    },
     SelectDevice {
         id: String,
     },

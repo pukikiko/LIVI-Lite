@@ -521,6 +521,15 @@ impl Devices {
             }
         }
     }
+
+    pub fn seek(&self, ms: u32, bt_mac: Option<String>) {
+        let helper = self.helper.clone();
+        tokio::spawn(async move {
+            if let Err(e) = helper.seek(ms, bt_mac.as_deref()).await {
+                eprintln!("[devices] seek to {ms} ms not sent: {e}");
+            }
+        });
+    }
 }
 
 pub async fn shared(line: String, within: Duration) -> Result<Value, String> {

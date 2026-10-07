@@ -113,6 +113,10 @@ impl Core {
                 let _ = self.asks.commands.send(UiCommand::Media(control));
                 Ok(())
             }
+            Action::Seek { position_ms } => {
+                let _ = self.asks.commands.send(UiCommand::Seek(position_ms));
+                Ok(())
+            }
             Action::NextDevice => {
                 let _ = self.asks.commands.send(UiCommand::NextDevice);
                 Ok(())
@@ -368,6 +372,9 @@ mod tests {
         ui.send(&ToCore::Action { id: 3, action: Action::NextDevice }).await;
         assert_eq!(ui.recv().await, Some(FromCore::Reply { id: 3, error: None }));
         assert_eq!(asks.commands.recv().await, Some(UiCommand::NextDevice));
+        ui.send(&ToCore::Action { id: 9, action: Action::Seek { position_ms: 61000 } }).await;
+        assert_eq!(ui.recv().await, Some(FromCore::Reply { id: 9, error: None }));
+        assert_eq!(asks.commands.recv().await, Some(UiCommand::Seek(61000)));
         let radio = Action::SetDongleRadio { radio: livi_core_proto::message::Radio::Bt, on: true };
         ui.send(&ToCore::Action { id: 4, action: radio }).await;
         assert_eq!(ui.recv().await, Some(FromCore::Reply { id: 4, error: None }));

@@ -415,6 +415,7 @@ pub async fn run_accessory<C: ControlChannel, A: AsyncAuth>(
     // Set once the phone offered CarPlay. A start asked for before that is dropped, the first one
     // still goes out when the offer comes.
     let mut offered = false;
+    let mut phone_bt_mac: Option<String> = None;
     let again = cp.start_again.clone();
     loop {
         let frame = tokio::select! {
@@ -452,11 +453,33 @@ pub async fn run_accessory<C: ControlChannel, A: AsyncAuth>(
                 }
                 continue;
             }
+            changed = vehicle.seek.changed() => {
+                if changed.is_err() {
+                    continue;
+                }
+                let seek = vehicle.seek.borrow_and_update().1.clone();
+                if !seek.meant_for(phone_bt_mac.as_deref()) {
+                    continue;
+                }
+                println!("[cp] now playing: jump to {} ms", seek.ms);
+                let jump = SetNowPlayingInformation { elapsed_ms: Some(seek.ms) };
+                if ch.send(jump.encode()).await.is_err() {
+                    break;
+                }
+                continue;
+            }
         };
         let Some(msg_id) = frame_msg_id(&frame) else {
             continue;
         };
         match msg_id {
+            0x4E0E => {
+                if let Ok(m) = DeviceTransportIdentifierNotification::decode(&frame)
+                    && !m.bluetooth_transport_id.is_empty()
+                {
+                    phone_bt_mac = Some(m.bluetooth_transport_id);
+                }
+            }
             0xFFFA => {
                 location_types = StartLocationInformation::decode(&frame)
                     .map(|req| LocationTypes::from_request(&req))

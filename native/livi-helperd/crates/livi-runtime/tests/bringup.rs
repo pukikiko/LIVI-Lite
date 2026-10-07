@@ -415,3 +415,33 @@ async fn location_and_vehicle_status_reach_the_phone_that_asked() {
     let status = VehicleStatusUpdate::decode(&phone.expect(0xA101).await).unwrap();
     assert_eq!(status.range, Some(290));
 }
+
+#[tokio::test]
+async fn a_seek_reaches_the_phone_as_the_new_elapsed_time() {
+    let (accessory, mut phone) = pair();
+    let (tx, mut rx) = mpsc::channel(32);
+    let vehicle = Vehicle::default();
+    tokio::spawn(run_accessory(
+        accessory,
+        MockAuth { cert: vec![1] },
+        identity(),
+        cp_config(),
+        tx,
+        vehicle.feed(),
+    ));
+    bring_up(&mut phone, &mut rx).await;
+
+    vehicle.push_seek("61000").unwrap();
+    let jump = SetNowPlayingInformation::decode(&phone.expect(0x5003).await).unwrap();
+    assert_eq!(jump.elapsed_ms, Some(61000));
+
+    let names = DeviceTransportIdentifierNotification {
+        bluetooth_transport_id: "AA:BB:CC:DD:EE:FF".into(),
+        usb_transport_id: String::new(),
+    };
+    phone.send(names.encode()).await.unwrap();
+    while !matches!(rx.recv().await, Some(BringupEvent::Incoming { msg_id: 0x4E0E, .. })) {}
+    vehicle.push_seek("62000 aa:bb:cc:dd:ee:ff").unwrap();
+    let jump = SetNowPlayingInformation::decode(&phone.expect(0x5003).await).unwrap();
+    assert_eq!(jump.elapsed_ms, Some(62000));
+}

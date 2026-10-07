@@ -258,6 +258,13 @@ where
             };
             reply(&mut stream, &json).await
         }
+        "seek" => {
+            let json = match state.vehicle().push_seek(arg) {
+                Ok(()) => "{\"ok\":true}".to_string(),
+                Err(e) => err_json(&e),
+            };
+            reply(&mut stream, &json).await
+        }
         "drop-iap2" => {
             let n = state.restart_wired();
             println!("[cp-sock] drop-iap2: {n} wired session(s) end for a fresh start");

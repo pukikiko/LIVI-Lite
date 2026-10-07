@@ -71,3 +71,9 @@ csm_message! {
 csm_message! {
     pub struct StopNowPlayingUpdates = 0x5002 {}
 }
+
+csm_message! {
+    pub struct SetNowPlayingInformation = 0x5003 {
+        0 => elapsed_ms: [opt u32],
+    }
+}

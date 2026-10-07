@@ -134,6 +134,14 @@ impl HelperSock {
         self.request(&format!("vehicle-status {status}")).await.map(drop)
     }
 
+    pub async fn seek(&self, ms: u32, bt_mac: Option<&str>) -> Result<(), String> {
+        let line = match bt_mac {
+            Some(mac) => format!("seek {ms} {mac}"),
+            None => format!("seek {ms}"),
+        };
+        self.request(&line).await.map(drop)
+    }
+
     /// In paging order.
     pub async fn send_reconnect_targets(
         &self,
@@ -307,6 +315,8 @@ pub(crate) mod tests {
             .send_reconnect_targets(&[("AA".into(), Some("u".into())), ("BB".into(), None)])
             .await
             .unwrap();
+        helper.seek(61000, Some("AA:BB")).await.unwrap();
+        helper.seek(0, None).await.unwrap();
         assert_eq!(
             seen.lock().unwrap().as_slice(),
             [
@@ -314,6 +324,8 @@ pub(crate) mod tests {
                 "start-wired udid1",
                 "vehicle-status {\"range\":120}",
                 "reconnect-targets [[\"AA\",\"u\"],[\"BB\",null]]",
+                "seek 61000 AA:BB",
+                "seek 0",
             ]
         );
     }
