@@ -367,6 +367,7 @@ pub struct Projection {
     duck_ramp_ms: u32,
     wants: PerScreen<Front>,
     /// What the UI last reported, so only its own changes override core's.
+    /// Reports are compared against `wants`, which core also moves on its own.
     asked: PerScreen<Front>,
     /// The kind holding the projection in front and the view main returns to.
     attention: Option<(Attention, Front)>,
@@ -1106,7 +1107,9 @@ impl Projection {
         let before = self.wants.main;
         let last = std::mem::replace(&mut self.asked, asked);
         for screen in [Screen::Main, Screen::Dash, Screen::Aux] {
-            if asked.get(screen) != last.get(screen) {
+            // Against wants, not last: core may have moved a screen on its own
+            // (host_ui, attention), and the same report has to bring it back.
+            if asked.get(screen) != self.wants.get(screen) {
                 *self.wants.get_mut(screen) = *asked.get(screen);
             }
         }
@@ -2665,6 +2668,42 @@ mod tests {
         assert_eq!(rig.sessions(), (None, 0, 0));
         rig.p.on_aa(AaEvent::Connected { id: 9 });
         assert_eq!(rig.p.sessions[0].transport, Transport::Wifi);
+    }
+
+    #[tokio::test]
+    async fn the_ui_returns_to_projection_after_the_phone_asked_for_the_car_ui() {
+        let mut rig = Rig::new();
+        rig.aa_connect(5, true);
+        rig.want(Front::Projection);
+        assert_eq!(rig.front(), Front::Projection);
+        rig.aa_drain();
+
+        // Android Auto's Exit asks for the car's own UI while the UI still
+        // reports Projection, then the user taps the projection tab again.
+        rig.p.on_aa(AaEvent::HostUiRequested { id: 5 });
+        assert_eq!(rig.front(), Front::Livi);
+
+        rig.want(Front::Projection);
+        assert_eq!(rig.front(), Front::Projection);
+        assert_eq!(rig.aa_drain(), [command(5, Command::Home), aa(5, SessionCmd::Keyframe)]);
+    }
+
+    #[tokio::test]
+    async fn the_ui_can_return_to_projection_after_a_call_restored_the_front() {
+        let mut rig = Rig::new();
+        rig.connect(1, true);
+        rig.want(Front::Livi);
+
+        // A call brings projection forward, the user follows it.
+        rig.p.on_event(CpEvent::Call { id: 1, phase: CallPhase::Ringing });
+        assert_eq!(rig.front(), Front::Projection);
+        rig.want(Front::Projection);
+        rig.p.on_event(CpEvent::Call { id: 1, phase: CallPhase::Ended });
+        assert_eq!(rig.front(), Front::Livi);
+
+        // The projection tab still has to bring the phone back.
+        rig.want(Front::Projection);
+        assert_eq!(rig.front(), Front::Projection);
     }
 
     #[tokio::test]
