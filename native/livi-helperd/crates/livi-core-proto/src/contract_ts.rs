@@ -35,6 +35,12 @@ fn checked_in() -> PathBuf {
 
 #[test]
 fn typescript_contract_is_current() {
+    // LIVI-Lite has no TypeScript client: the Electron renderer is gone and
+    // with it the checked-in contract. Keep the test meaningful only where
+    // that tree exists (upstream), instead of failing on a missing file.
+    if !checked_in().is_dir() {
+        return;
+    }
     let out = std::env::temp_dir().join(format!("livi-core-proto-{}", std::process::id()));
     let _ = fs::remove_dir_all(&out);
     let cfg = ts_rs::Config::new().with_large_int("number").with_out_dir(&out);
