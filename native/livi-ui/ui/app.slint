@@ -189,8 +189,14 @@ component Shell inherits Rectangle {
 export component MainWindow inherits Window {
     // The compositor routes UI surfaces by their "livi:<role>" title.
     title: "livi:main";
-    width: 1280px;
-    height: 720px;
+    // preferred-*, not width/height: setting width fixes the window size and
+    // the window manager can no longer resize it. All content metrics stay at
+    // fixed sizes so elements look the same at any window size; the layouts
+    // stretch to fill (pages scroll where needed on small windows).
+    preferred-width: 1280px;
+    preferred-height: 720px;
+    min-width: 480px;
+    min-height: 360px;
     background: Theme.background;
 
     // Keys land here first: projection controls, key bindings and the key
