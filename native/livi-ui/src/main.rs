@@ -110,7 +110,21 @@ fn main() {
     }
 
     let ui = MainWindow::new().expect("failed to create the Slint window");
+    // The appliance image sets LIVI_UI_SIZE to the car panel (800x480), so a
+    // windowed run opens at the panel size; under the kiosk the compositor
+    // fullscreen sizes it anyway.
+    if let Some((w, h)) = ui_size_px() {
+        ui.window().set_size(slint::PhysicalSize::new(w, h));
+    }
     run_ui(ui);
+}
+
+/// `LIVI_UI_SIZE=800x480`, shared with livi-core's panel default.
+fn ui_size_px() -> Option<(u32, u32)> {
+    let v = std::env::var("LIVI_UI_SIZE").ok()?;
+    let (w, h) = v.trim().split_once('x')?;
+    let (w, h) = (w.trim().parse::<u32>().ok()?, h.trim().parse::<u32>().ok()?);
+    (w > 0 && h > 0).then_some((w, h))
 }
 
 fn run_ui(ui: MainWindow) {

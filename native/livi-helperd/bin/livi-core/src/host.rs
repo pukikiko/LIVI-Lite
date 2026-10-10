@@ -47,11 +47,28 @@ fn forced_edid_connector(cmdline: &str) -> Option<&str> {
     valid.then_some(connector)
 }
 
+/// A headless kiosk (weston headless, no DRM connector) has no EDID to size
+/// the projection by. `LIVI_UI_SIZE=800x480` names the panel instead, so the
+/// appliance image sets it to the car panel it streams to.
+pub fn ui_size_px() -> Option<(u32, u32)> {
+    parse_ui_size(&std::env::var("LIVI_UI_SIZE").ok()?)
+}
+
+fn parse_ui_size(v: &str) -> Option<(u32, u32)> {
+    let (w, h) = v.trim().split_once('x')?;
+    let (w, h) = (w.trim().parse::<u32>().ok()?, h.trim().parse::<u32>().ok()?);
+    (w > 0 && h > 0).then_some((w, h))
+}
+
 /// Only unambiguous through a forced EDID or a single connected display.
 #[cfg(target_os = "linux")]
 pub fn panel_native_px() -> Option<(u32, u32)> {
     use std::fs;
 
+    if let Some(px) = ui_size_px() {
+        println!("[core] panel from LIVI_UI_SIZE: {}x{} px", px.0, px.1);
+        return Some(px);
+    }
     let cmdline = fs::read_to_string("/proc/cmdline").unwrap_or_default();
     let connected: Vec<String> = fs::read_dir("/sys/class/drm")
         .ok()?
@@ -74,7 +91,7 @@ pub fn panel_native_px() -> Option<(u32, u32)> {
 
 #[cfg(not(target_os = "linux"))]
 pub fn panel_native_px() -> Option<(u32, u32)> {
-    None
+    ui_size_px()
 }
 
 #[cfg(any(target_os = "linux", test))]
@@ -138,5 +155,14 @@ mod tests {
         assert!(!is_connector("card0"));
         assert!(!is_connector("renderD128"));
         assert!(!is_connector("card-x"));
+    }
+
+    #[test]
+    fn ui_size_from_the_environment() {
+        assert_eq!(parse_ui_size("800x480"), Some((800, 480)));
+        assert_eq!(parse_ui_size(" 1280x720 "), Some((1280, 720)));
+        assert_eq!(parse_ui_size("0x480"), None);
+        assert_eq!(parse_ui_size("800"), None);
+        assert_eq!(parse_ui_size("axb"), None);
     }
 }
