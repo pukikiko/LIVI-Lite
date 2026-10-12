@@ -34,6 +34,9 @@ permissions:
   contents: write
   actions: write
 
+env:
+  CARGO_INCREMENTAL: 0
+
 jobs:
   plan:
     name: Plan build matrix
@@ -150,7 +153,7 @@ jobs:
           grep -rl dl.google.com /etc/apt/sources.list /etc/apt/sources.list.d 2>/dev/null || true
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-              build-essential pkg-config libudev1 ca-certificates \
+              build-essential pkg-config libudev1 ca-certificates libssl-dev \
               libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
               cmake libwayland-dev libxkbcommon-dev
           sudo rm -rf /var/lib/apt/lists/*
@@ -168,12 +171,11 @@ jobs:
         uses: actions/cache@v5
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            native/livi-helperd/target
-            native/livi-compositor/rust/target
-            native/livi-gst-video/rust/target
-          key: cargo-linux-x64-${{ hashFiles('native/livi-helperd/Cargo.lock', 'native/livi-helperd/**/Cargo.toml', 'native/livi-compositor/rust/Cargo.lock', 'native/livi-compositor/rust/Cargo.toml', 'native/livi-gst-video/rust/Cargo.lock', 'native/livi-gst-video/rust/**/Cargo.toml', 'native/livi-crypto/rust/Cargo.toml') }}
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            native/target
+          key: cargo-linux-x64-${{ hashFiles('native/Cargo.lock', 'native/**/Cargo.toml') }}
           restore-keys: cargo-linux-x64-
 
       - name: Install deps (pnpm) [linux-x64]
@@ -201,7 +203,7 @@ jobs:
           grep -rl dl.google.com /etc/apt/sources.list /etc/apt/sources.list.d 2>/dev/null || true
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-              build-essential pkg-config libudev1 ca-certificates \
+              build-essential pkg-config libudev1 ca-certificates libssl-dev \
               libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
               cmake libwayland-dev libxkbcommon-dev
           sudo rm -rf /var/lib/apt/lists/*
@@ -219,12 +221,11 @@ jobs:
         uses: actions/cache@v5
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            native/livi-helperd/target
-            native/livi-compositor/rust/target
-            native/livi-gst-video/rust/target
-          key: cargo-linux-arm64-${{ hashFiles('native/livi-helperd/Cargo.lock', 'native/livi-helperd/**/Cargo.toml', 'native/livi-compositor/rust/Cargo.lock', 'native/livi-compositor/rust/Cargo.toml', 'native/livi-gst-video/rust/Cargo.lock', 'native/livi-gst-video/rust/**/Cargo.toml', 'native/livi-crypto/rust/Cargo.toml') }}
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            native/target
+          key: cargo-linux-arm64-${{ hashFiles('native/Cargo.lock', 'native/**/Cargo.toml') }}
           restore-keys: cargo-linux-arm64-
 
       - name: Install deps (pnpm) [linux-arm64]
@@ -300,11 +301,11 @@ jobs:
         uses: actions/cache@v5
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            native/livi-helperd/target
-            native/livi-gst-video/rust/target
-          key: cargo-macos-${{ matrix.arch }}-${{ hashFiles('native/livi-helperd/Cargo.lock', 'native/livi-helperd/**/Cargo.toml', 'native/livi-gst-video/rust/Cargo.lock', 'native/livi-gst-video/rust/**/Cargo.toml') }}
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            native/target
+          key: cargo-macos-${{ matrix.arch }}-${{ hashFiles('native/Cargo.lock', 'native/**/Cargo.toml') }}
           restore-keys: cargo-macos-${{ matrix.arch }}-
 
       - name: Install deps (pnpm) [macos-arm64]

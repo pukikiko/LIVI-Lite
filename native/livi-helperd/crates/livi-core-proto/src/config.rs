@@ -66,6 +66,7 @@ pub struct Config {
     pub last_connected_aa_bt_mac: Option<String>,
 
     pub dark_mode: bool,
+    pub overlay_messages: bool,
     pub display_brightness: f64,
     pub display_brightness_auto: bool,
     /// The Wi-Fi AP, Bluetooth and head-unit name, at most 20 characters.
@@ -76,6 +77,14 @@ pub struct Config {
     pub car_type: Option<CarType>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ev_connector_types: Option<Vec<EvConnectorType>>,
+    pub max_speed_kph: u32,
+    /// Speed between two numbered marks on the dash, in the unit shown.
+    pub speed_scale_step: u32,
+    pub max_rpm: u32,
+    /// 0 for none.
+    pub redline_rpm: u32,
+    pub speed_unit: SpeedUnit,
+    pub temperature_unit: TemperatureUnit,
 
     #[ts(type = "0 | 1")]
     pub sampling_frequency: u8,
@@ -178,6 +187,8 @@ pub enum WifiBand {
     Ghz24,
     #[serde(rename = "5ghz")]
     Ghz5,
+    #[serde(rename = "6ghz")]
+    Ghz6,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -187,6 +198,22 @@ pub enum AppearanceMode {
     Auto,
     Night,
     Day,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "contract.ts")]
+pub enum SpeedUnit {
+    Kmh,
+    Mph,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "contract.ts")]
+pub enum TemperatureUnit {
+    Celsius,
+    Fahrenheit,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize_repr, Deserialize_repr, TS)]
@@ -222,6 +249,28 @@ pub enum CarType {
     HybridDiesel = 102,
 }
 
+impl CarType {
+    /// The names the UI uses, in any case.
+    pub fn from_name(name: &str) -> Option<Self> {
+        const ALL: [(&str, CarType); 13] = [
+            ("Gasoline", CarType::Gasoline),
+            ("DieselWinter", CarType::DieselWinter),
+            ("Diesel", CarType::Diesel),
+            ("Biodiesel", CarType::Biodiesel),
+            ("E85", CarType::E85),
+            ("LPG", CarType::Lpg),
+            ("CNG", CarType::Cng),
+            ("LNG", CarType::Lng),
+            ("Electric", CarType::Electric),
+            ("Hydrogen", CarType::Hydrogen),
+            ("Other", CarType::Other),
+            ("HybridGasoline", CarType::HybridGasoline),
+            ("HybridDiesel", CarType::HybridDiesel),
+        ];
+        ALL.iter().find(|(n, _)| n.eq_ignore_ascii_case(name.trim())).map(|(_, t)| *t)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize_repr, Deserialize_repr, TS)]
 #[repr(u8)]
 #[ts(export_to = "contract.ts", repr(enum))]
@@ -235,6 +284,23 @@ pub enum EvConnectorType {
     TeslaSupercharger = 8,
     Gbt = 9,
     Other = 101,
+}
+
+impl EvConnectorType {
+    /// The names the UI uses, in any case.
+    pub fn from_name(name: &str) -> Option<Self> {
+        const ALL: [(&str, EvConnectorType); 8] = [
+            ("J1772", EvConnectorType::J1772),
+            ("Mennekes", EvConnectorType::Mennekes),
+            ("Chademo", EvConnectorType::Chademo),
+            ("Combo1", EvConnectorType::Combo1),
+            ("Combo2", EvConnectorType::Combo2),
+            ("TeslaSupercharger", EvConnectorType::TeslaSupercharger),
+            ("Gbt", EvConnectorType::Gbt),
+            ("Other", EvConnectorType::Other),
+        ];
+        ALL.iter().find(|(n, _)| n.eq_ignore_ascii_case(name.trim())).map(|(_, t)| *t)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -375,6 +441,7 @@ pub fn defaults() -> Config {
         cluster_safe_area_right: 300,
         last_connected_aa_bt_mac: empty(),
         dark_mode: true,
+        overlay_messages: true,
         display_brightness: 1.0,
         display_brightness_auto: true,
         car_name: "LIVI".into(),
@@ -382,6 +449,12 @@ pub fn defaults() -> Config {
         hand: HandDriveType::Lhd,
         car_type: Some(CarType::Gasoline),
         ev_connector_types: Some(Vec::new()),
+        max_speed_kph: 200,
+        speed_scale_step: 40,
+        max_rpm: 5000,
+        redline_rpm: 4500,
+        speed_unit: SpeedUnit::Kmh,
+        temperature_unit: TemperatureUnit::Celsius,
         sampling_frequency: 1,
         disable_audio_output: false,
         hu_volume: 0.95,
@@ -482,5 +555,19 @@ fn default_bindings() -> KeyBindings {
         phone_key_hook_switch: key(""),
         voice_assistant: key("KeyV"),
         voice_assistant_release: key(""),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn names_from_telemetry_match_in_any_case() {
+        assert_eq!(CarType::from_name(" hybriddiesel "), Some(CarType::HybridDiesel));
+        assert_eq!(CarType::from_name("LPG"), Some(CarType::Lpg));
+        assert_eq!(CarType::from_name("Unknown"), None);
+        assert_eq!(EvConnectorType::from_name("combo2"), Some(EvConnectorType::Combo2));
+        assert_eq!(EvConnectorType::from_name("Type 2"), None);
     }
 }

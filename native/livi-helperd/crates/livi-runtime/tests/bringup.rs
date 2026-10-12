@@ -11,11 +11,10 @@ use iap2_csm::messages::location::*;
 use iap2_csm::messages::now_playing::*;
 use iap2_csm::messages::power::PowerSourceUpdate;
 use iap2_csm::messages::vehicle_status::*;
-use iap2_csm::messages::wifi::SecurityType;
 use livi_runtime::bringup::{BringupEvent, CpConfig, OnCable, run_accessory};
 use livi_runtime::framing::frame_msg_id;
 use livi_runtime::ident::{Identity, Transport};
-use livi_runtime::vehicle::{Vehicle, VehicleFeed};
+use livi_runtime::vehicle::{Fuels, Vehicle, VehicleFeed};
 use livi_runtime::{AsyncAuth, ChannelError, ControlChannel};
 
 struct PairChannel {
@@ -67,6 +66,7 @@ fn identity() -> Identity {
         name: "LIVI".into(),
         ssid: "LIVI".into(),
         bt_mac: [0xAA, 0xBB, 0xCC, 0x11, 0x22, 0x33],
+        fuels: Fuels::parse("Gasoline"),
     }
 }
 
@@ -77,8 +77,7 @@ fn cp_config() -> CpConfig {
         wifi_iface: "nonexistent0".into(),
         ssid: "LIVI".into(),
         passphrase: "12345678".into(),
-        channel: 36,
-        security_type: SecurityType::WpaWpa2,
+        channel: livi_wifi::Channel::of_number(36),
         airplay_port: 7000,
         source_version: "950.7.1".into(),
         public_key: String::new(),
@@ -292,7 +291,10 @@ async fn identification_retries_without_droppable_field() {
 
     phone.send(StartIdentification {}.encode()).await.unwrap();
     let first = phone.expect(0x1D01).await;
-    assert!(IdentificationInformation::decode(&first).unwrap().vehicle_status_component.is_some());
+    let status =
+        IdentificationInformation::decode(&first).unwrap().vehicle_status_component.unwrap();
+    assert!(status.range_gasoline && status.range_warning_gasoline);
+    assert!(!status.range_electric && !status.range_diesel && !status.range_cng);
 
     let mut reject = IdentificationRejected {
         name: false,
@@ -376,6 +378,7 @@ async fn location_and_vehicle_status_reach_the_phone_that_asked() {
         (status.range, status.outside_temperature, status.range_warning),
         (Some(320), Some(12), None)
     );
+    assert_eq!((status.range_gasoline, status.range_electric), (Some(320), None));
 
     phone
         .send(

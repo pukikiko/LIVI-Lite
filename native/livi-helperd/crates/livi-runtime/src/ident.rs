@@ -1,10 +1,13 @@
 use iap2_csm::messages::identification::*;
 
+use crate::vehicle::Fuels;
+
 #[derive(Debug, Clone)]
 pub struct Identity {
     pub name: String,
     pub ssid: String,
     pub bt_mac: [u8; 6],
+    pub fuels: Fuels,
 }
 
 /// Which transport carries this session, which decides the transport components the phone
@@ -122,7 +125,15 @@ pub fn build_identification(
                 name: id.name.clone(),
                 range: true,
                 outside_temperature: true,
-                range_warning: false,
+                range_warning: true,
+                range_gasoline: id.fuels.gasoline,
+                range_diesel: id.fuels.diesel,
+                range_electric: id.fuels.electric,
+                range_cng: id.fuels.cng,
+                range_warning_gasoline: id.fuels.gasoline,
+                range_warning_diesel: id.fuels.diesel,
+                range_warning_electric: id.fuels.electric,
+                range_warning_cng: id.fuels.cng,
             })
         },
         location_information_component: if dropped("location_information_component") {

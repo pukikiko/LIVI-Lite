@@ -7,11 +7,12 @@ use livi_aa_stack::config::{AaConfig, Addresses as AaAddresses, Codecs};
 use livi_core_proto::config::{AppearanceMode, Config, HandDriveType};
 use livi_core_proto::state::State;
 use livi_cp::info::{DisplayConfig, Icon, InfoConfig, Insets};
-use livi_cp::media::{AudioCodec, AudioRequest, AudioStream, Media, MicRequest};
+use livi_cp::media::{AudioCodec, AudioRequest, AudioStream, Media, MicRequest, VideoStatus};
 use livi_cp::stack::StackConfig;
-use livi_host_proto::{PLANE_CLUSTER_RECV, PLANE_MAIN};
+use livi_host_proto::{PLANE_CLUSTER_RECV, PLANE_MAIN, PLANE_VIDEO, UrlStatus};
 use livi_media::compositor::Panel;
 use livi_media::gst_host::{self, GstHost, HostEvent};
+use livi_media::planes::VideoPlane;
 use tokio::sync::{broadcast, watch};
 
 use crate::hwaddr;
@@ -22,26 +23,40 @@ const ICON_256: &str = include_str!("../../../../../src/main/shared/assets/icon-
 
 pub struct GstMedia {
     gst: GstHost,
+    video: Arc<VideoPlane>,
     started: broadcast::Sender<(u32, u32)>,
+    video_status: Arc<Mutex<Option<VideoStatus>>>,
+    output_delays: Arc<Mutex<HashMap<u32, u32>>>,
 }
 
 impl GstMedia {
-    pub fn new(gst: GstHost) -> Arc<Self> {
+    pub fn new(gst: GstHost, video: Arc<VideoPlane>) -> Arc<Self> {
         let (started, _) = broadcast::channel(32);
         let mut events = gst.subscribe();
         let tx = started.clone();
+        let video_status = Arc::new(Mutex::new(None));
+        let latest = video_status.clone();
+        let output_delays = Arc::new(Mutex::new(HashMap::new()));
+        let delays = output_delays.clone();
         tokio::spawn(async move {
             loop {
                 match events.recv().await {
                     Ok(HostEvent::AudioStarted { stream, first_sample }) => {
                         let _ = tx.send((stream, first_sample));
                     }
+                    Ok(HostEvent::AudioDelay { stream, ms }) => {
+                        delays.lock().unwrap_or_else(|e| e.into_inner()).insert(stream, ms);
+                    }
+                    Ok(HostEvent::UrlStatus { plane: PLANE_VIDEO, status }) => {
+                        *latest.lock().unwrap_or_else(|e| e.into_inner()) =
+                            Some(video_status_of(status));
+                    }
                     Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
                     Err(broadcast::error::RecvError::Closed) => return,
                 }
             }
         });
-        Arc::new(Self { gst, started })
+        Arc::new(Self { gst, video, started, video_status, output_delays })
     }
 }
 
@@ -92,6 +107,10 @@ impl Media for GstMedia {
         self.gst.set_audio_volume(stream, level, ramp_ms);
     }
 
+    fn audio_output_delay(&self, stream: u32) -> Option<u32> {
+        self.output_delays.lock().unwrap_or_else(|e| e.into_inner()).get(&stream).copied()
+    }
+
     fn close_audio(&self, stream: u32) {
         self.gst.close_audio(stream);
     }
@@ -119,6 +138,66 @@ impl Media for GstMedia {
 
     fn audio_started(&self) -> broadcast::Receiver<(u32, u32)> {
         self.started.subscribe()
+    }
+
+    fn play_video(&self, url: String, audio_device: String, muted: bool) {
+        self.forget_video_status();
+        let plane = self.video.clone();
+        let turn = plane.turn();
+        tokio::spawn(async move {
+            if plane.play(turn, &url, &audio_device).await {
+                if muted {
+                    plane.set_muted(true);
+                }
+                println!("[core] video {url} on its own plane");
+            }
+        });
+    }
+
+    fn set_video_rate(&self, rate: f64) {
+        self.video.set_rate(rate);
+    }
+
+    fn seek_video(&self, seconds: f64) {
+        self.video.seek(seconds);
+    }
+
+    fn set_video_muted(&self, muted: bool) {
+        self.video.set_muted(muted);
+    }
+
+    fn set_video_shown(&self, shown: bool) {
+        self.video.set_shown(shown);
+    }
+
+    fn stop_video(&self) {
+        self.video.stop();
+        self.forget_video_status();
+        println!("[core] video plane closed");
+    }
+
+    fn video_status(&self) -> Option<VideoStatus> {
+        *self.video_status.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+impl GstMedia {
+    /// What the last player said is no word about the next one.
+    fn forget_video_status(&self) {
+        *self.video_status.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+}
+
+fn video_status_of(s: UrlStatus) -> VideoStatus {
+    VideoStatus {
+        position: s.position,
+        duration: s.duration,
+        seekable: s.seekable,
+        playing: s.playing,
+        ready: s.ready,
+        buffered_percent: s.buffered_percent,
+        ended: s.ended,
+        failed: s.failed,
     }
 }
 
@@ -173,6 +252,7 @@ fn icons(cfg: &Config) -> Vec<Icon> {
 pub struct Addresses {
     pub device_id: String,
     pub bt_mac: String,
+    pub access_point: Option<livi_wifi::OnAir>,
 }
 
 pub fn stack_config(
@@ -263,8 +343,11 @@ pub fn offers_hevc(probe: &serde_json::Value) -> bool {
 
 fn aa_config(cfg: &Config, codecs: Codecs, addresses: &Addresses) -> AaConfig {
     let known = |a: &str| (a != hwaddr::FALLBACK).then(|| a.to_string());
-    let addresses =
-        AaAddresses { bt_mac: known(&addresses.bt_mac), wifi_bssid: known(&addresses.device_id) };
+    let addresses = AaAddresses {
+        bt_mac: known(&addresses.bt_mac),
+        wifi_bssid: known(&addresses.device_id),
+        access_point: addresses.access_point.clone(),
+    };
     livi_aa_stack::config::from_livi(cfg, codecs, night_mode(cfg.appearance_mode), &addresses)
 }
 
@@ -301,8 +384,11 @@ impl ConfigSource {
         state: watch::Receiver<State>,
         panels: watch::Receiver<HashMap<String, Panel>>,
     ) -> (Arc<Self>, watch::Receiver<StackConfig>, watch::Receiver<AaConfig>) {
-        let addresses =
-            Addresses { device_id: hwaddr::FALLBACK.into(), bt_mac: hwaddr::FALLBACK.into() };
+        let addresses = Addresses {
+            device_id: hwaddr::FALLBACK.into(),
+            bt_mac: hwaddr::FALLBACK.into(),
+            access_point: None,
+        };
         let cfg = state.borrow().config.clone();
         let first = stack_config(&cfg, &panels.borrow(), false, &addresses);
         let (tx, rx) = watch::channel(first);
@@ -335,12 +421,15 @@ impl ConfigSource {
                     format!("bt {}", cfg.bt_adapter),
                     hwaddr::bt_mac(&cfg.bt_adapter),
                 ),
+                access_point: livi_link_host::on_air(&cfg.wifi_interface),
             }
         };
         let addresses = {
             let mut known = self.addresses.lock().unwrap_or_else(|e| e.into_inner());
             if *known != found {
-                println!("[core] CarPlay accessory {} (bt {})", found.device_id, found.bt_mac);
+                if (&known.device_id, &known.bt_mac) != (&found.device_id, &found.bt_mac) {
+                    println!("[core] CarPlay accessory {} (bt {})", found.device_id, found.bt_mac);
+                }
                 *known = found;
             }
             known.clone()
@@ -421,7 +510,11 @@ mod tests {
     }
 
     fn addresses() -> Addresses {
-        Addresses { device_id: "11:11:11:11:11:11".into(), bt_mac: "22:22:22:22:22:22".into() }
+        Addresses {
+            device_id: "11:11:11:11:11:11".into(),
+            bt_mac: "22:22:22:22:22:22".into(),
+            access_point: None,
+        }
     }
 
     #[test]

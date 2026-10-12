@@ -133,6 +133,14 @@ csm_group! {
         3 => range: [flag],
         4 => outside_temperature: [flag],
         6 => range_warning: [flag],
+        9 => range_gasoline: [flag],
+        10 => range_diesel: [flag],
+        11 => range_electric: [flag],
+        12 => range_cng: [flag],
+        13 => range_warning_gasoline: [flag],
+        14 => range_warning_diesel: [flag],
+        15 => range_warning_electric: [flag],
+        16 => range_warning_cng: [flag],
     }
 }
 

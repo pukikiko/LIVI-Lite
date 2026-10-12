@@ -1,6 +1,7 @@
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use livi_host_proto::{CLUSTER_PLANE_MIN, MAIN_TAG, PLANE_MAIN, SCREENS};
+use livi_host_proto::{CLUSTER_PLANE_MIN, MAIN_TAG, PLANE_MAIN, PLANE_VIDEO, SCREENS, VIDEO_TAG};
 use tokio::sync::broadcast;
 
 use crate::compositor::CompositorControl;
@@ -46,6 +47,10 @@ pub fn crop_for(tier: (u32, u32), display: (u32, u32)) -> Option<Crop> {
     })
 }
 
+fn same_stream(codec: Option<Codec>, data: &[u8], next: Codec, atom: &[u8]) -> bool {
+    codec == Some(next) && data == atom
+}
+
 #[derive(Default)]
 struct State {
     started: bool,
@@ -79,15 +84,16 @@ impl MainPlane {
 
     pub fn prepare(self: &Arc<Self>, codec: Codec, atom: Vec<u8>) {
         let generation = {
-            let mut st = self.state();
-            st.codec_data = atom;
-            if (st.started && st.codec == Some(codec)) || st.claiming {
+            let st = self.state();
+            if (st.started || st.claiming) && same_stream(st.codec, &st.codec_data, codec, &atom) {
                 return;
             }
             drop(st);
             self.dispose();
             let mut st = self.state();
             st.claiming = true;
+            st.codec = Some(codec);
+            st.codec_data = atom;
             st.generation
         };
         let plane = self.clone();
@@ -136,6 +142,67 @@ impl MainPlane {
         if started {
             self.gst.stop(PLANE_MAIN);
         }
+    }
+}
+
+/// A plane of its own above the main one, so video LIVI fetches itself never touches the
+/// projection's player and its decoder.
+pub struct VideoPlane {
+    gst: GstHost,
+    comp: CompositorControl,
+    stops: AtomicU64,
+    shown: AtomicBool,
+}
+
+impl VideoPlane {
+    pub fn new(gst: GstHost, comp: CompositorControl) -> Arc<Self> {
+        Arc::new(Self { gst, comp, stops: AtomicU64::new(0), shown: AtomicBool::new(true) })
+    }
+
+    /// Taken when a play is handed to a task, a stop before it gets going cancels it.
+    pub fn turn(&self) -> u64 {
+        self.stops.load(Ordering::SeqCst)
+    }
+
+    /// The plane takes the whole main screen, the sink keeps the picture's shape. False when a
+    /// stop came first.
+    pub async fn play(&self, turn: u64, url: &str, audio_device: &str) -> bool {
+        if self.turn() != turn {
+            return false;
+        }
+        self.comp.videocfg(VIDEO_TAG, SCREEN, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        self.comp.videoshow(VIDEO_TAG, self.shown.load(Ordering::SeqCst));
+        self.comp.claim(VIDEO_TAG).await;
+        if self.turn() != turn {
+            return false;
+        }
+        self.gst.play_url(PLANE_VIDEO, url, audio_device);
+        true
+    }
+
+    /// 0 pauses.
+    pub fn set_rate(&self, rate: f64) {
+        self.gst.set_play_rate(PLANE_VIDEO, rate);
+    }
+
+    pub fn seek(&self, seconds: f64) {
+        self.gst.seek(PLANE_VIDEO, seconds);
+    }
+
+    pub fn set_muted(&self, muted: bool) {
+        self.gst.set_play_muted(PLANE_VIDEO, muted);
+    }
+
+    pub fn set_shown(&self, shown: bool) {
+        self.shown.store(shown, Ordering::SeqCst);
+        self.comp.videoshow(VIDEO_TAG, shown);
+    }
+
+    pub fn stop(&self) {
+        self.stops.fetch_add(1, Ordering::SeqCst);
+        self.comp.release(VIDEO_TAG);
+        self.comp.videoshow(VIDEO_TAG, false);
+        self.gst.stop(PLANE_VIDEO);
     }
 }
 
@@ -192,8 +259,10 @@ impl ClusterPlanes {
     pub fn prepare(self: &Arc<Self>, codec: Codec, atom: Vec<u8>) {
         let restart = {
             let mut st = self.state();
+            let same = same_stream(st.codec, &st.codec_data, codec, &atom);
+            st.codec = Some(codec);
             st.codec_data = atom;
-            st.codec.replace(codec) != Some(codec)
+            !same
         };
         for i in 0..CLUSTER_SCREENS.len() {
             if restart {
@@ -331,6 +400,16 @@ mod tests {
         assert_eq!((c.vis_w, c.vis_h, c.crop_l), (960.0, 720.0, 160.0));
     }
 
+    #[test]
+    fn only_the_same_stream_keeps_the_running_player() {
+        assert!(same_stream(Some(Codec::H265), &[1, 2], Codec::H265, &[1, 2]));
+        // CarPlay hands its parameter sets over, Android Auto sends them in the stream.
+        assert!(!same_stream(Some(Codec::H265), &[1, 2], Codec::H265, &[]));
+        assert!(!same_stream(Some(Codec::H265), &[1, 2], Codec::H265, &[3, 4]));
+        assert!(!same_stream(Some(Codec::H264), &[], Codec::H265, &[]));
+        assert!(!same_stream(None, &[], Codec::H265, &[]));
+    }
+
     #[tokio::test]
     async fn the_player_is_created_after_the_claim_and_only_once() {
         let dir = TempDir::new();
@@ -444,5 +523,87 @@ mod tests {
         assert_eq!(msg.id, CLUSTER_PLANE_MIN + 1);
         assert_ne!(msg.op, 1);
         assert!(created.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn the_video_plane_lies_over_the_main_screen_until_it_stops() {
+        let dir = TempDir::new();
+        let comp_listener = UnixListener::bind(dir.0.join("ctrl")).unwrap();
+        let gst = GstHost::new(dir.0.join("gst.sock"));
+        let plane = VideoPlane::new(gst.clone(), CompositorControl::connect(dir.0.join("ctrl")));
+
+        assert!(plane.play(plane.turn(), "http://127.0.0.1:9/i.m3u8", "car").await);
+        let (ctrl, _) = tokio::time::timeout(Duration::from_secs(5), comp_listener.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        let mut lines = BufReader::new(ctrl).lines();
+        let mut seen = Vec::new();
+        for _ in 0..3 {
+            seen.push(next_line(&mut lines).await);
+        }
+        assert!(seen.contains(&"videocfg video main 0 0 0 0 0 0".to_string()));
+        assert!(seen.contains(&"videoshow video 1".to_string()));
+        assert!(seen.contains(&"claim video".to_string()));
+
+        let mut host = UnixStream::connect(dir.0.join("gst.sock")).await.unwrap();
+        let mut framer = livi_host_proto::Framer::new();
+        let msg = next_msg(&mut host, &mut framer).await;
+        assert_eq!((msg.op, msg.id), (22, PLANE_VIDEO));
+        assert_eq!(
+            livi_host_proto::parse_url_body(&msg.rest),
+            Some(("http://127.0.0.1:9/i.m3u8".into(), "car".into()))
+        );
+
+        plane.set_rate(0.0);
+        plane.seek(3.5);
+        plane.set_muted(true);
+        let rate = next_msg(&mut host, &mut framer).await;
+        assert_eq!((rate.op, rate.rest), (23, 0.0f64.to_le_bytes().to_vec()));
+        let seek = next_msg(&mut host, &mut framer).await;
+        assert_eq!((seek.op, seek.rest), (24, 3.5f64.to_le_bytes().to_vec()));
+        let mute = next_msg(&mut host, &mut framer).await;
+        assert_eq!((mute.op, mute.rest), (25, vec![1]));
+
+        plane.stop();
+        let mut after = Vec::new();
+        while !after.contains(&"videoshow video 0".to_string()) {
+            after.push(next_line(&mut lines).await);
+        }
+        let msg = next_msg(&mut host, &mut framer).await;
+        assert_eq!((msg.op, msg.id), (3, PLANE_VIDEO));
+
+        let turn = plane.turn();
+        plane.stop();
+        assert!(!plane.play(turn, "http://127.0.0.1:9/i.m3u8", "car").await, "stopped first");
+        let msg = next_msg(&mut host, &mut framer).await;
+        assert_eq!((msg.op, msg.id), (3, PLANE_VIDEO), "no play behind the stop");
+    }
+
+    #[tokio::test]
+    async fn a_hidden_video_plane_stays_hidden_for_the_next_play() {
+        let dir = TempDir::new();
+        let comp_listener = UnixListener::bind(dir.0.join("ctrl")).unwrap();
+        let gst = GstHost::new(dir.0.join("gst.sock"));
+        let plane = VideoPlane::new(gst.clone(), CompositorControl::connect(dir.0.join("ctrl")));
+
+        let (ctrl, _) = tokio::time::timeout(Duration::from_secs(5), comp_listener.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        let mut lines = BufReader::new(ctrl).lines();
+        plane.set_shown(false);
+        assert!(plane.play(plane.turn(), "http://127.0.0.1:9/i.m3u8", "").await);
+        plane.set_shown(true);
+        let mut seen = Vec::new();
+        while !seen.contains(&"videoshow video 1".to_string()) {
+            seen.push(next_line(&mut lines).await);
+        }
+        let shows: Vec<&str> =
+            seen.iter().map(String::as_str).filter(|l| l.starts_with("videoshow")).collect();
+        let (last, before) = shows.split_last().unwrap();
+        assert_eq!(*last, "videoshow video 1");
+        assert!(!before.is_empty() && before.iter().all(|l| *l == "videoshow video 0"));
+        assert!(seen.contains(&"claim video".to_string()));
     }
 }

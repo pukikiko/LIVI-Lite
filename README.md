@@ -79,8 +79,7 @@ packaging/updater tooling (see the limitations note above).
 ## Native Connectivity
 
 - **Apple CarPlay** (wired & wireless) on Linux and Mac — requires [MFi Authentication](#mfi-authentication)
-- **Android Auto** (wired) on all platforms
-- **Android Auto** (wireless) on Linux
+- **Android Auto** (wired & wireless) on Linux and Mac — wireless on Mac requires a [LIVI Link](LIVI-LINK.md)
 
 ## Native Apple CarPlay
 
@@ -92,6 +91,7 @@ LIVI implements the CarPlay accessory side natively, wired and wireless, on Linu
 - touch, knob/D-Pad and hard-key input
 - day/night mode and GPS forwarding to the phone
 - multi-session with live switching between connected phones
+- video playback while parked (AirPlay video, Linux only for now, no FairPlay-protected content)
 
 Wireless CarPlay requires a Bluetooth adapter and a Wi-Fi interface dedicated to the access point. Both can come from a [LIVI Link](LIVI-LINK.md), which brings its own radios. Wired CarPlay works on any USB port.
 

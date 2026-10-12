@@ -135,6 +135,8 @@ pub enum CpCmd {
     NightMode(bool),
     /// None for automatic.
     InitialNightMode(Option<bool>),
+    LimitedUi(bool),
+    VideoAllowed(bool),
     ClusterActive(bool),
     /// The phones reconnect.
     DropSessions,
@@ -229,6 +231,7 @@ struct Manager<M: Media> {
     to_cable: HashMap<String, JoinHandle<()>>,
     initial_night_mode: Option<bool>,
     cluster_stream_active: bool,
+    video_allowed: bool,
 }
 
 pub fn start<M: Media>(
@@ -266,6 +269,7 @@ async fn run<M: Media>(
         to_cable: HashMap::new(),
         initial_night_mode: None,
         cluster_stream_active: true,
+        video_allowed: true,
     };
     loop {
         tokio::select! {
@@ -339,6 +343,7 @@ impl<M: Media> Manager<M> {
             session.send(StackCmd::NightMode(night));
         }
         session.send(StackCmd::ClusterActive(self.cluster_stream_active));
+        session.send(StackCmd::VideoAllowed(self.video_allowed));
         self.sessions.insert(id, session);
         self.emit(CpEvent::Spawned { id });
         id
@@ -834,6 +839,17 @@ impl<M: Media> Manager<M> {
                     }
                 }
             }
+            CpCmd::LimitedUi(limited) => {
+                for s in self.sessions.values() {
+                    s.send(StackCmd::LimitedUi(limited));
+                }
+            }
+            CpCmd::VideoAllowed(allowed) => {
+                self.video_allowed = allowed;
+                for s in self.sessions.values() {
+                    s.send(StackCmd::VideoAllowed(allowed));
+                }
+            }
             CpCmd::ClusterActive(active) => {
                 self.cluster_stream_active = active;
                 for s in self.sessions.values() {
@@ -960,6 +976,8 @@ mod tests {
                 config,
                 refresh: None,
                 debug: false,
+                video_playback: false,
+                video_capture: None,
             });
             let listener = net::tcp_listener().unwrap();
             let port = net::local_port(listener.local_addr());
@@ -1106,6 +1124,8 @@ mod tests {
         rig.handle.stack(id, StackCmd::Keyframe);
         rig.handle.send(CpCmd::NightMode(true));
         rig.handle.send(CpCmd::InitialNightMode(Some(false)));
+        rig.handle.send(CpCmd::LimitedUi(true));
+        rig.handle.send(CpCmd::VideoAllowed(false));
         rig.handle.send(CpCmd::ClusterActive(false));
         phone.sock.shutdown().await.unwrap();
         assert_eq!(

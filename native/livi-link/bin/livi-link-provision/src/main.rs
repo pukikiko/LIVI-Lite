@@ -276,6 +276,7 @@ fn menu() -> std::process::ExitCode {
             Found::Nothing => (false, None, Detected::Nothing),
         };
         let wifi_only = link_usb == Some(bootstrap::LinkOnUsb::NoNcm);
+        let link_ncm = link_usb == Some(bootstrap::LinkOnUsb::Ncm);
         println!("\nLIVI Link provisioning tool v{VERSION}");
         if stock_usb {
             println!("Detected: i.MX6UL dongle in stock firmware, on USB (no shell yet)");
@@ -285,11 +286,7 @@ fn menu() -> std::process::ExitCode {
                     "Detected: i.MX6UL dongle with the bootstrap, its kernel has no network over USB (no NCM)"
                 ),
                 Some(bootstrap::LinkOnUsb::Ncm) => {
-                    println!("Detected: LIVI Link on USB, but this computer has no network to it");
-                    println!(
-                        "  check that its new network interface got an address next to {}",
-                        shell::DEFAULT_HOST
-                    );
+                    println!("Detected: LIVI Link on USB, but this computer has no network to it")
                 }
                 None => println!("Detected: {}", detected.label()),
             }
@@ -326,6 +323,9 @@ fn menu() -> std::process::ExitCode {
             Detected::Nothing if wifi_only => {
                 println!("  1  install LIVI Link over the dongle's Wi-Fi");
             }
+            Detected::Nothing if link_ncm => {
+                println!("  1  go on with the install over USB");
+            }
             Detected::Nothing => {}
         }
         println!("  q  quit");
@@ -354,10 +354,12 @@ fn menu() -> std::process::ExitCode {
                 Ok(()) => return std::process::ExitCode::SUCCESS,
                 Err(e) => Err(e),
             },
-            ("1", Detected::Nothing) if stock_usb || wifi_only => match imx6ul_provision(None) {
-                Ok(()) => return std::process::ExitCode::SUCCESS,
-                Err(e) => Err(e),
-            },
+            ("1", Detected::Nothing) if stock_usb || wifi_only || link_ncm => {
+                match imx6ul_provision(None) {
+                    Ok(()) => return std::process::ExitCode::SUCCESS,
+                    Err(e) => Err(e),
+                }
+            }
             ("1", Detected::Rescue { family }) => match rescue_reflash(*family) {
                 Ok(()) => return std::process::ExitCode::SUCCESS,
                 Err(e) => Err(e),
@@ -393,7 +395,7 @@ fn imx6ul_provision(lfwb: Option<&Path>) -> Result<(), String> {
     let sh = Shell::new(&host);
     // A stock dongle offers the host no network, so the bootstrap rides into the next boot.
     if !sh.reachable() {
-        if bootstrap::livi_link_on_usb() != Some(bootstrap::LinkOnUsb::NoNcm) {
+        if bootstrap::livi_link_on_usb().is_none() {
             println!("== this dongle has no way in yet, so it needs one unplug and plug back in");
             println!("== writing the bootstrap over USB");
             bootstrap::boot_hook()?;
@@ -530,13 +532,22 @@ fn wait_for_livi_link(host: &str) -> Result<link::Status, String> {
 }
 
 fn wait_for_shell(sh: &Shell) -> Result<(), String> {
+    let mut asked = false;
     for _ in 0..60 {
         if sh.port_open(shell::TELNET_PORT) {
             println!("== shell is up");
             return Ok(());
         }
-        if bootstrap::livi_link_on_usb() == Some(bootstrap::LinkOnUsb::NoNcm) {
-            return shell_over_wifi(sh);
+        match bootstrap::livi_link_on_usb() {
+            Some(bootstrap::LinkOnUsb::NoNcm) => return shell_over_wifi(sh),
+            Some(bootstrap::LinkOnUsb::Ncm) => {
+                if let Some(host) = link_local_shell(&mut asked) {
+                    sh.move_to(&host);
+                    println!("== shell is up on {host}");
+                    return Ok(());
+                }
+            }
+            None => {}
         }
         std::thread::sleep(Duration::from_secs(2));
     }
@@ -548,6 +559,22 @@ fn wait_for_shell(sh: &Shell) -> Result<(), String> {
         ),
         _ => "no shell after two minutes, see LIVI-LINK.md".into(),
     })
+}
+
+/// A computer that leaves the new interface down never asks the dongle for an address. The
+/// bootstrap's link-local address only needs the interface up.
+fn link_local_shell(asked: &mut bool) -> Option<String> {
+    let iface = bootstrap::link_iface()?;
+    if !bootstrap::iface_up(&iface) && !bootstrap::bring_up(&iface) {
+        if !*asked {
+            println!("== {iface} is down, this computer does not bring it up by itself, run:");
+            println!("   sudo ip link set {iface} up");
+            *asked = true;
+        }
+        return None;
+    }
+    let host = format!("{}%{iface}", bootstrap::link_local(bootstrap::BOOTSTRAP_MAC));
+    Shell::new(&host).port_open(shell::TELNET_PORT).then_some(host)
 }
 
 /// The bootstrap leaves the vendor's access point up where the kernel has no NCM.

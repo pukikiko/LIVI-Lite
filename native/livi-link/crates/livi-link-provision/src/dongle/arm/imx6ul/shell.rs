@@ -2,7 +2,7 @@
 //! no usable prompt, so the output is taken from between two markers.
 
 use std::io::{Read, Write};
-use std::net::{Shutdown, SocketAddr, TcpStream, ToSocketAddrs};
+use std::net::{Ipv6Addr, Shutdown, SocketAddr, SocketAddrV6, TcpStream, ToSocketAddrs};
 use std::sync::Mutex;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
@@ -41,6 +41,9 @@ impl Shell {
 
     pub fn socket_addr(&self, port: u16) -> Result<SocketAddr, String> {
         let host = self.host();
+        if let Some(addr) = scoped(&host, port, sysfs_ifindex) {
+            return Ok(addr);
+        }
         (host.as_str(), port)
             .to_socket_addrs()
             .map_err(|e| format!("resolve {host}:{port}: {e}"))?
@@ -213,6 +216,18 @@ impl crate::dongle::Remote for Shell {
     }
 }
 
+/// `fe80::…%iface`, a link-local address on the interface named after the `%`. Not every system's
+/// resolver takes the interface name, so it is turned into its index here.
+fn scoped(host: &str, port: u16, index_of: impl Fn(&str) -> Option<u32>) -> Option<SocketAddr> {
+    let (ip, iface) = host.split_once('%')?;
+    let ip: Ipv6Addr = ip.parse().ok()?;
+    Some(SocketAddr::V6(SocketAddrV6::new(ip, port, 0, index_of(iface)?)))
+}
+
+fn sysfs_ifindex(iface: &str) -> Option<u32> {
+    std::fs::read_to_string(format!("/sys/class/net/{iface}/ifindex")).ok()?.trim().parse().ok()
+}
+
 /// Lower-case hex, as `md5sum` prints it.
 pub fn md5_hex(data: &[u8]) -> String {
     use md5::{Digest, Md5};
@@ -268,6 +283,21 @@ mod tests {
         sh.move_to(DEFAULT_HOST);
         assert_eq!(sh.host(), DEFAULT_HOST);
         assert_eq!(sh.socket_addr(TELNET_PORT).unwrap().to_string(), "10.10.10.1:2323");
+    }
+
+    #[test]
+    fn a_link_local_address_carries_its_interface_index() {
+        let index = |iface: &str| (iface == "wwx0").then_some(7);
+        let SocketAddr::V6(a) = scoped("fe80::c08e:30ff:fe53:4801%wwx0", 2323, index).unwrap()
+        else {
+            panic!("not v6")
+        };
+        assert_eq!(
+            (a.ip().to_string(), a.port(), a.scope_id()),
+            ("fe80::c08e:30ff:fe53:4801".into(), 2323, 7)
+        );
+        assert!(scoped("fe80::1%gone", 2323, index).is_none());
+        assert!(scoped(DEFAULT_HOST, 2323, index).is_none());
     }
 
     #[test]

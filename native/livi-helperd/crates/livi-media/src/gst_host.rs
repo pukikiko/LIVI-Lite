@@ -25,8 +25,14 @@ const OP_AUDIO_DATA: u8 = 14;
 const OP_VISUALIZER: u8 = 15;
 const OP_FEED_OPEN: u8 = 16;
 const OP_AUDIO_OUTPUT: u8 = 17;
+const OP_FEED_ROUTE: u8 = 18;
+const OP_FEED_CLOSE: u8 = 19;
 const OP_TAP_OPEN: u8 = 20;
 const OP_TAP_STOP: u8 = 21;
+const OP_PLAY_URL: u8 = 22;
+const OP_PLAY_RATE: u8 = 23;
+const OP_PLAY_SEEK: u8 = 24;
+const OP_PLAY_MUTE: u8 = 25;
 
 const REPLY_PORT: u8 = 1;
 const REPLY_CONFIG: u8 = 2;
@@ -35,6 +41,8 @@ const REPLY_AUDIO_PORTS: u8 = 4;
 const REPLY_AUDIO_STARTED: u8 = 5;
 const REPLY_VISUALIZER: u8 = 6;
 const REPLY_FEED: u8 = 7;
+const REPLY_URL_STATUS: u8 = 8;
+const REPLY_AUDIO_DELAY: u8 = 9;
 
 const ANSWER_TIMEOUT: Duration = Duration::from_secs(4);
 
@@ -71,10 +79,27 @@ pub enum HostEvent {
         stream: u32,
         first_sample: u32,
     },
+    /// What a stream measurably takes from its release to the speaker.
+    AudioDelay {
+        stream: u32,
+        ms: u32,
+    },
     /// Every stream summed, tapped before the fader, 0 to 1 per band.
     Spectrum {
         bands: Vec<f32>,
     },
+    /// Where a plane that plays a URL stands, twice a second.
+    UrlStatus {
+        plane: u32,
+        status: livi_host_proto::UrlStatus,
+    },
+}
+
+/// Where a fed stream of its own ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FeedTarget {
+    Plane(u32),
+    Audio(u32),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -377,6 +402,14 @@ impl GstHost {
                     let _ = w.send(String::from_utf8_lossy(rest).into_owned());
                 }
             }
+            REPLY_AUDIO_DELAY => {
+                let _ = self.inner.events.send(HostEvent::AudioDelay { stream: id, ms: u32_at(0) });
+            }
+            REPLY_URL_STATUS => {
+                if let Some(status) = livi_host_proto::parse_url_status(rest) {
+                    let _ = self.inner.events.send(HostEvent::UrlStatus { plane: id, status });
+                }
+            }
             _ => {}
         }
     }
@@ -429,6 +462,25 @@ impl GstHost {
 
     pub fn close_video_receiver(&self, receiver: u32) {
         self.send(frame(OP_TEARDOWN, receiver, &[]));
+    }
+
+    /// A fed stream of its own into a plane or an audio stream, switched like a receiver: the
+    /// active one plays and holds the others of the same target.
+    pub fn open_feed_route(&self, target: FeedTarget, active: bool) -> u32 {
+        let id = self.next_id();
+        let (kind, target) = match target {
+            FeedTarget::Plane(plane) => (0u8, plane),
+            FeedTarget::Audio(stream) => (1, stream),
+        };
+        let mut rest = vec![kind];
+        rest.extend_from_slice(&target.to_le_bytes());
+        rest.push(u8::from(active));
+        self.send(frame(OP_FEED_ROUTE, id, &rest));
+        id
+    }
+
+    pub fn close_feed_route(&self, id: u32) {
+        self.send(frame(OP_FEED_CLOSE, id, &[]));
     }
 
     /// (stream id, data port, control port), ports 0 on a timeout.
@@ -537,6 +589,24 @@ impl GstHost {
         ));
     }
 
+    /// The host fetches and times the stream itself, an empty device is the system default.
+    pub fn play_url(&self, plane: u32, url: &str, audio_device: &str) {
+        self.send(frame(OP_PLAY_URL, plane, &livi_host_proto::url_body(url, audio_device)));
+    }
+
+    /// 0 pauses.
+    pub fn set_play_rate(&self, plane: u32, rate: f64) {
+        self.send(frame(OP_PLAY_RATE, plane, &rate.to_le_bytes()));
+    }
+
+    pub fn seek(&self, plane: u32, seconds: f64) {
+        self.send(frame(OP_PLAY_SEEK, plane, &seconds.to_le_bytes()));
+    }
+
+    pub fn set_play_muted(&self, plane: u32, muted: bool) {
+        self.send(frame(OP_PLAY_MUTE, plane, &[u8::from(muted)]));
+    }
+
     pub fn stop(&self, plane: u32) {
         self.send(frame(OP_STOP, plane, &[]));
     }
@@ -636,6 +706,15 @@ mod tests {
         let bands: Vec<u8> = [0.25f32, 1.0].iter().flat_map(|b| b.to_le_bytes()).collect();
         first.reply(REPLY_VISUALIZER, 0, &bands).await;
         assert_eq!(events.recv().await.unwrap(), HostEvent::Spectrum { bands: vec![0.25, 1.0] });
+        let status = livi_host_proto::UrlStatus { position: Some(2.0), ..Default::default() };
+        first
+            .reply(REPLY_URL_STATUS, 0x7a00_0002, &livi_host_proto::url_status_body(&status))
+            .await;
+        first.reply(REPLY_URL_STATUS, 0x7a00_0002, &[1]).await;
+        assert_eq!(
+            events.recv().await.unwrap(),
+            HostEvent::UrlStatus { plane: 0x7a00_0002, status }
+        );
         drop(first);
 
         let mut again = FakeHost::connect(&gst).await;
@@ -664,6 +743,24 @@ mod tests {
         gst.stop(0x7a00_0001);
         let mut fake = FakeHost::connect(&gst).await;
         assert_eq!(fake.next().await.op, OP_STOP);
+    }
+
+    #[tokio::test]
+    async fn a_feed_route_names_its_target_and_closes_again() {
+        let dir = TempDir::new();
+        let gst = host(&dir);
+        let mut fake = FakeHost::connect(&gst).await;
+        let video = gst.open_feed_route(FeedTarget::Plane(0x7a00_0001), true);
+        let audio = gst.open_feed_route(FeedTarget::Audio(0x7b00_0009), false);
+        assert_ne!(video, audio);
+        let first = fake.next().await;
+        assert_eq!((first.op, first.id), (OP_FEED_ROUTE, video));
+        assert_eq!(first.rest, [0, 1, 0, 0, 0x7a, 1]);
+        let second = fake.next().await;
+        assert_eq!((second.id, second.rest.as_slice()), (audio, &[1, 9, 0, 0, 0x7b, 0][..]));
+        gst.close_feed_route(video);
+        let close = fake.next().await;
+        assert_eq!((close.op, close.id), (OP_FEED_CLOSE, video));
     }
 
     #[tokio::test]
@@ -711,6 +808,7 @@ mod tests {
 
         fake.reply(REPLY_CONFIG, 0x7a00_0001, &[1, 0xaa, 0xbb]).await;
         fake.reply(REPLY_AUDIO_STARTED, req.id, &5u32.to_le_bytes()).await;
+        fake.reply(REPLY_AUDIO_DELAY, req.id, &120u32.to_le_bytes()).await;
         assert_eq!(
             events.recv().await.unwrap(),
             HostEvent::Config { plane: 0x7a00_0001, codec: Codec::H265, atom: vec![0xaa, 0xbb] }
@@ -719,6 +817,7 @@ mod tests {
             events.recv().await.unwrap(),
             HostEvent::AudioStarted { stream: req.id, first_sample: 5 }
         );
+        assert_eq!(events.recv().await.unwrap(), HostEvent::AudioDelay { stream: req.id, ms: 120 });
     }
 
     #[tokio::test]

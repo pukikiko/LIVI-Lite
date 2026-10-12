@@ -3,12 +3,12 @@ use base64::engine::general_purpose::STANDARD;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
-use iap2_csm::messages::wifi::SecurityType;
 use livi_runtime::AsyncAuth;
 use livi_runtime::bringup::CpConfig;
 use livi_runtime::ident::{Identity, Transport};
 use livi_runtime::livi_sock::{Bluez, Broadcaster, LiviSockConfig, serve};
 use livi_runtime::state::HelperState;
+use livi_runtime::vehicle::Fuels;
 use std::sync::Arc;
 use tokio::sync::{Notify, watch};
 
@@ -30,15 +30,19 @@ impl AsyncAuth for MockAuth {
 fn config(path: &str) -> LiviSockConfig {
     LiviSockConfig {
         path: path.into(),
-        identity: Identity { name: "LIVI".into(), ssid: "LIVI".into(), bt_mac: [0; 6] },
+        identity: Identity {
+            name: "LIVI".into(),
+            ssid: "LIVI".into(),
+            bt_mac: [0; 6],
+            fuels: Fuels::default(),
+        },
         cp: CpConfig {
             ap_mac: None,
             ap_on_air: None,
             wifi_iface: "none0".into(),
             ssid: "LIVI".into(),
             passphrase: "12345678".into(),
-            channel: 36,
-            security_type: SecurityType::WpaWpa2,
+            channel: livi_wifi::Channel::of_number(36),
             airplay_port: 7000,
             source_version: "950.7.1".into(),
             public_key: String::new(),

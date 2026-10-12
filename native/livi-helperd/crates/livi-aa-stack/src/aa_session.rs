@@ -18,7 +18,7 @@ use crate::log::detail;
 use crate::manager::{AaEvent, SessionId};
 use crate::media::{AaMedia, AudioKind, AudioOutput};
 use crate::sensors::Sensor;
-use crate::session::{BYEBYE_USER_SELECTION, Out, PING_INTERVAL, Session, SessionEvent, Timer};
+use crate::session::{BYEBYE_USER_SELECTION, Out, Session, SessionEvent, Timer};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SessionCmd {
@@ -188,13 +188,12 @@ impl<M: AaMedia> Phone<M> {
                 Out::End => self.link.end(),
                 Out::Destroy => self.link.destroy(),
                 Out::Event(e) => self.on_session_event(e),
-                Out::Ping(true) => {
-                    let mut i =
-                        tokio::time::interval_at(Instant::now() + PING_INTERVAL, PING_INTERVAL);
+                Out::Ping(Some(every)) => {
+                    let mut i = tokio::time::interval_at(Instant::now() + every, every);
                     i.set_missed_tick_behavior(MissedTickBehavior::Delay);
                     self.ping = Some(i);
                 }
-                Out::Ping(false) => self.ping = None,
+                Out::Ping(None) => self.ping = None,
                 Out::After(d, t) => self.timers.push((Instant::now() + d, t)),
                 Out::ShutdownDone => self.shutdown_done = true,
             }
@@ -275,6 +274,7 @@ impl<M: AaMedia> Phone<M> {
         }
         self.mic_active = false;
         self.drop_mic_tap();
+        self.media.release(self.id);
         self.down_emitted = true;
         self.emit(AaEvent::Disconnected { id: self.id });
     }
@@ -326,9 +326,7 @@ impl<M: AaMedia> Phone<M> {
             }
             SessionCmd::ClusterActive(active) => self.session.set_cluster_stream_active(active),
             SessionCmd::VideoActive(active) => {
-                self.media.set_video_active(false, active);
-                self.media.set_video_active(true, active);
-                self.media.set_audio_active(active);
+                self.media.set_active(self.id, active);
                 Vec::new()
             }
             SessionCmd::StreamVolume { kind, level, ramp_ms } => {
@@ -386,10 +384,10 @@ impl<M: AaMedia> Phone<M> {
 
     /// The plane comes first, so the host has a decoder when the feed starts.
     fn push_video_sink(&mut self, cluster: bool, codec: VideoCodec) {
-        self.media.prime_video(cluster, codec);
+        self.media.prime_video(self.id, cluster, codec);
         let entry = json!({
             "ch": if cluster { ch::CLUSTER_VIDEO } else { ch::VIDEO },
-            "id": self.media.video_plane(cluster),
+            "id": self.media.video_feed(self.id, cluster),
             "codec": codec.name(),
         });
         self.deliver(true, "video", entry);
@@ -397,7 +395,8 @@ impl<M: AaMedia> Phone<M> {
 
     fn push_audio_sink(&mut self, o: &AudioOutput) {
         let Some(channel) = o.tag.as_deref().and_then(AudioChannelType::from_name) else { return };
-        self.deliver(false, "audio", json!({ "ch": channel.channel(), "id": o.stream }));
+        let id = self.media.audio_feed(self.id, o.stream);
+        self.deliver(false, "audio", json!({ "ch": channel.channel(), "id": id }));
     }
 
     fn deliver(&self, video: bool, key: &'static str, entry: Value) {
@@ -634,10 +633,9 @@ mod tests {
         assert_eq!(
             r.media.take(),
             [
-                json!({ "videoActive": [false, false] }),
-                json!({ "videoActive": [true, false] }),
-                json!({ "audioActive": false }),
-                json!({ "volume": [4, 0.5, 100] })
+                json!({ "active": [7, false] }),
+                json!({ "volume": [4, 0.5, 100] }),
+                json!({ "release": 7 })
             ]
         );
         loop {

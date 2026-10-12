@@ -7,13 +7,13 @@ edition.workspace = true
 [lib]
 crate-type = ["cdylib"]
 
-[dependencies]
-livi-host-proto = { path = "../../../livi-host-proto/rust" }
-livi-video-player = { path = "../player", features = ["window-view"] }
+[target.'cfg(target_os = "macos")'.dependencies]
+livi-host-proto.workspace = true
+livi-video-player = { workspace = true, features = ["window-view"] }
 napi = { version = "3.14", default-features = false, features = ["napi8"] }
 napi-derive = "3.6"
 
 [build-dependencies]
-cc = "1.6"
+cc = "1.7"
 pkg-config = "0.3"
 napi-build = "2.6"

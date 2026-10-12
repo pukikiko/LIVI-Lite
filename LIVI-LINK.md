@@ -1,7 +1,7 @@
 # LIVI Link
 
-A CarPlay dongle, reflashed into a network accessory for LIVI's native CarPlay stack. It is
-supported on Linux and macOS, and can provide:
+A CarPlay dongle, reflashed into a network accessory for LIVI's native CarPlay and Android Auto
+stacks. It is supported on Linux and macOS, and can provide:
 
 - **MFi authentication** over the network
 - **A Wi-Fi access point**

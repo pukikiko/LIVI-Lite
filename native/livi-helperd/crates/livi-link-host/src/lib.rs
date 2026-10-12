@@ -1,7 +1,7 @@
+pub mod accessory;
 pub mod ap;
 #[cfg(target_os = "linux")]
 pub mod bt;
-pub mod iap;
 pub mod link;
 
 use std::sync::{Arc, Mutex};
@@ -19,6 +19,11 @@ const WATCH_RETRY: Duration = Duration::from_secs(5);
 
 /// (on the bus, serial)
 pub type OnLink = dyn Fn(bool, &str) + Send + Sync;
+
+/// The access point a phone joins for wireless projection, whichever radio carries it.
+pub fn on_air(wifi_interface: &str) -> Option<livi_wifi::OnAir> {
+    if wifi_interface == link::CHOICE { ap::on_air() } else { livi_wifi::on_air(wifi_interface) }
+}
 
 pub fn is_livi_link(info: &DeviceInfo) -> bool {
     info.product_string() == Some(LINK_PRODUCT)

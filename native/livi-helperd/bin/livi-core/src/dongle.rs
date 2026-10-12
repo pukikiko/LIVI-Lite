@@ -70,14 +70,15 @@ fn commands_for(cfg: &Config, status: &Status) -> Vec<String> {
     settings_for(cfg)
 }
 
-/// On Linux the host drives the dongle's controller itself, over the tunnel.
+/// The host drives the dongle's controller itself, over the tunnel. Only on Linux can a test hand
+/// wireless CarPlay to the dongle's own accessory instead.
 fn accessory_on_dongle() -> bool {
-    !cfg!(target_os = "linux") || std::env::var("LIVI_BT_VIA_DONGLE").as_deref() == Ok("1")
+    cfg!(target_os = "linux") && std::env::var("LIVI_BT_VIA_DONGLE").as_deref() == Ok("1")
 }
 
 fn bt_commands_for(cfg: &Config) -> Vec<String> {
     let on = cfg.bt_adapter == CHOICE && cfg.wireless_cp_enabled && accessory_on_dongle();
-    vec![if on { "iap on" } else { "iap off" }.into()]
+    vec![if on { "accessory on" } else { "accessory off" }.into()]
 }
 
 /// Channel and width are left out, the dongle narrows those itself when its
@@ -104,6 +105,29 @@ fn mbps(bytes: f64, over: Duration) -> f64 {
         return 0.0;
     }
     (bytes * 8.0 / secs / 1e6 * 10.0).round() / 10.0
+}
+
+/// A host access point counts the way the dongle does: bytes on the interface, the phone's
+/// rates from the kernel.
+fn host_counters(iface: &str) -> Option<Status> {
+    let bytes = |dir: &str| {
+        std::fs::read_to_string(format!("/sys/class/net/{iface}/statistics/{dir}_bytes"))
+            .ok()
+            .map(|s| s.trim().to_string())
+    };
+    let mut status = Status::new();
+    status.insert("downbytes".into(), bytes("rx")?);
+    status.insert("upbytes".into(), bytes("tx")?);
+    Some(status)
+}
+
+fn host_rates(iface: &str) -> Status {
+    let mut status = Status::new();
+    if let Some((down, up)) = livi_wifi::stations(iface).rates {
+        status.insert("downrate".into(), down.to_string());
+        status.insert("uprate".into(), up.to_string());
+    }
+    status
 }
 
 fn attached() -> bool {
@@ -228,8 +252,8 @@ impl Link {
     }
 
     /// A single missed poll keeps the dongle listed, the route needs a moment after plug in.
-    async fn poll(&mut self, hub: &Hub, speed_shown: bool) -> Option<Status> {
-        let mut status = if attached() {
+    async fn poll(&mut self, hub: &Hub, speed_shown: bool, wifi_interface: &str) -> Option<Status> {
+        let status = if attached() {
             tokio::task::spawn_blocking(ap::status).await.ok().flatten()
         } else {
             None
@@ -237,21 +261,31 @@ impl Link {
         self.misses = if status.is_some() { 0 } else { self.misses.saturating_add(1) };
         let answers =
             status.is_some() || (self.misses < 2 && hub.watch().borrow().system.dongle.is_some());
-        let link_speed = match status.as_mut() {
-            Some(s) if speed_shown => {
+        let host = wifi_interface != CHOICE;
+        let mut counted = match (host, speed_shown) {
+            (_, false) => None,
+            (false, true) => status.clone(),
+            (true, true) => {
+                let iface = wifi_interface.to_string();
+                tokio::task::spawn_blocking(move || host_counters(&iface)).await.ok().flatten()
+            }
+        };
+        let link_speed = match counted.as_mut() {
+            Some(s) => {
                 if self.rates_due() {
-                    self.rates = tokio::task::spawn_blocking(ap::rates)
-                        .await
-                        .ok()
-                        .flatten()
-                        .unwrap_or_default();
+                    let iface = wifi_interface.to_string();
+                    self.rates = tokio::task::spawn_blocking(move || {
+                        if host { host_rates(&iface) } else { ap::rates().unwrap_or_default() }
+                    })
+                    .await
+                    .unwrap_or_default();
                     self.rates_at = Some(Instant::now());
                 }
                 // Older dongles carry the rates in the status.
                 s.extend(self.rates.clone());
                 Some(self.speed(s))
             }
-            _ => {
+            None => {
                 self.bytes = None;
                 self.rates_at = None;
                 None
@@ -259,6 +293,8 @@ impl Link {
         };
         let mut wifi_interfaces = hwaddr::wifi_interfaces();
         let mut bt_adapters = hwaddr::bt_adapters();
+        let models =
+            hwaddr::interface_models(&[wifi_interfaces.clone(), bt_adapters.clone()].concat());
         let mut dongle = None;
         if answers {
             dongle = match &status {
@@ -271,6 +307,7 @@ impl Link {
         hub.update(|s| {
             s.system.wifi_interfaces = wifi_interfaces;
             s.system.bt_adapters = bt_adapters;
+            s.system.interface_models = models;
             s.system.dongle = dongle;
             s.system.link_speed = link_speed;
         });
@@ -319,7 +356,7 @@ pub async fn run(hub: Arc<Hub>, mut asks: DongleAsks) {
         tokio::select! {
             _ = tick.tick() => {
                 let speed_shown = *asks.link_speed_viewers.borrow() > 0;
-                let status = link.poll(&hub, speed_shown).await;
+                let status = link.poll(&hub, speed_shown, &cfg.wifi_interface).await;
                 if link.due(status.as_ref(), &cfg) {
                     link.reconcile(&cfg).await;
                 }
@@ -411,13 +448,15 @@ mod tests {
     }
 
     #[test]
-    fn the_accessory_runs_on_the_dongle_only_with_its_bluetooth_and_wireless_carplay() {
+    fn the_dongles_own_accessory_stays_off_while_the_host_drives_its_controller() {
         let mut cfg = on_dongle();
-        assert_eq!(bt_commands_for(&cfg), ["iap off"]);
-        cfg.bt_adapter = CHOICE.into();
         cfg.wireless_cp_enabled = true;
-        let expected = if accessory_on_dongle() { "iap on" } else { "iap off" };
-        assert_eq!(bt_commands_for(&cfg), [expected]);
+        assert_eq!(bt_commands_for(&cfg), ["accessory off"]);
+        cfg.bt_adapter = CHOICE.into();
+        let on = if accessory_on_dongle() { "accessory on" } else { "accessory off" };
+        assert_eq!(bt_commands_for(&cfg), [on]);
+        cfg.wireless_cp_enabled = false;
+        assert_eq!(bt_commands_for(&cfg), ["accessory off"]);
     }
 
     #[test]

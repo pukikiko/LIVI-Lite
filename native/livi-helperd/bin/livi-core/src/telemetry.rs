@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use livi_core_proto::config::{AppearanceMode, Config};
+use livi_core_proto::config::{AppearanceMode, CarType, Config, EvConnectorType};
 use livi_core_proto::state::State;
 use serde_json::{Map, Value, json};
 use socketioxide::SocketIo;
@@ -149,6 +149,12 @@ impl Telemetry {
         if changed.contains_key("gps") {
             self.gps_changed().await;
         }
+        if let Some(name) = changed.get("carType").and_then(Value::as_str) {
+            self.car_type_from(name).await;
+        }
+        if let Some(names) = changed.get("evConnectorTypes").and_then(Value::as_array) {
+            self.connectors_from(names).await;
+        }
     }
 
     async fn appearance(&mut self, mode: AppearanceMode) {
@@ -173,6 +179,27 @@ impl Telemetry {
         self.volume = Some(level);
         println!("[volume] head unit set to {} % from telemetry", (level * 100.0).round());
         self.save(json!({ "huVolume": level })).await;
+    }
+
+    /// What the car says beats the settings.
+    async fn car_type_from(&self, name: &str) {
+        let Some(car) = CarType::from_name(name) else { return };
+        if self.core.hub.config().car_type == Some(car) {
+            return;
+        }
+        println!("[telemetry] car type {name} from the car");
+        self.save(json!({ "carType": car })).await;
+    }
+
+    async fn connectors_from(&self, names: &[Value]) {
+        let connectors: Vec<EvConnectorType> =
+            names.iter().filter_map(Value::as_str).filter_map(EvConnectorType::from_name).collect();
+        if connectors.is_empty()
+            || self.core.hub.config().ev_connector_types == Some(connectors.clone())
+        {
+            return;
+        }
+        self.save(json!({ "evConnectorTypes": connectors })).await;
     }
 
     async fn gps_changed(&mut self) {
@@ -391,6 +418,27 @@ mod tests {
         assert_eq!(core.hub.watch().borrow().telemetry["nightMode"], false);
         t.appearance(AppearanceMode::Auto).await;
         assert_eq!(t.snap["nightMode"], false);
+    }
+
+    #[tokio::test]
+    async fn the_car_type_and_connectors_from_the_car_go_into_the_config() {
+        let dir = TempDir::new();
+        let core = core(&dir, defaults());
+        let (_, io, _) = socket(core.hub.watch());
+        let mut t = Telemetry::new(core.clone(), io);
+
+        t.push(&json!({ "carType": "hybridGasoline" })).await;
+        assert_eq!(core.hub.config().car_type, Some(CarType::HybridGasoline));
+        t.push(&json!({ "carType": "Steam" })).await;
+        t.push(&json!({ "carType": 10 })).await;
+        assert_eq!(core.hub.config().car_type, Some(CarType::HybridGasoline));
+
+        t.push(&json!({ "evConnectorTypes": ["Combo2", "Type 2", "mennekes"] })).await;
+        let both = Some(vec![EvConnectorType::Combo2, EvConnectorType::Mennekes]);
+        assert_eq!(core.hub.config().ev_connector_types, both);
+        t.push(&json!({ "evConnectorTypes": ["Type 2"] })).await;
+        t.push(&json!({ "evConnectorTypes": ["Combo2", "Mennekes"] })).await;
+        assert_eq!(core.hub.config().ev_connector_types, both);
     }
 
     #[tokio::test]

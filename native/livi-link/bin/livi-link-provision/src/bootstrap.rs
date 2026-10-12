@@ -1,6 +1,9 @@
 // The wire writes files with no execute bit, so the bootstrap rides on /etc/profile, which rcS
 // sources at boot.
 
+use std::net::Ipv6Addr;
+use std::path::Path;
+
 use crate::wire;
 use livi_session_io::usb::{UsbStream, open_pipe};
 use tokio::io::AsyncWriteExt;
@@ -76,16 +79,63 @@ pub enum LinkOnUsb {
     NoNcm,
 }
 
+/// By the product name alone, the bootstrap keeps whatever ids the vendor firmware left on the
+/// gadget.
 pub fn livi_link_on_usb() -> Option<LinkOnUsb> {
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().ok()?;
     runtime.block_on(async {
         let devices = nusb::list_devices().await.ok()?;
-        let link = devices
-            .into_iter()
-            .find(|d| livi_link_host::is_dongle(d) && livi_link_host::is_livi_link(d))?;
+        let link = devices.into_iter().find(livi_link_host::is_livi_link)?;
         let interfaces = link.interfaces().map(|i| (i.class(), i.subclass()));
         Some(if carries_ncm(interfaces) { LinkOnUsb::Ncm } else { LinkOnUsb::NoNcm })
     })
+}
+
+/// What the bootstrap sets on ncm0, so its link-local address is known before it runs.
+pub const BOOTSTRAP_MAC: [u8; 6] = [0xc2, 0x8e, 0x30, 0x53, 0x48, 0x01];
+
+pub fn link_local(mac: [u8; 6]) -> Ipv6Addr {
+    let [a, b, c, d, e, f] = mac;
+    let eui = [a ^ 0x02, b, c, 0xff, 0xfe, d, e, f];
+    let mut bytes = [0u8; 16];
+    bytes[..2].copy_from_slice(&[0xfe, 0x80]);
+    bytes[8..].copy_from_slice(&eui);
+    Ipv6Addr::from(bytes)
+}
+
+/// The network interface the LIVI Link on USB brought, found by the product name of the USB
+/// device behind it. Linux only, elsewhere there is no /sys.
+pub fn link_iface() -> Option<String> {
+    link_iface_in(Path::new("/sys"))
+}
+
+fn link_iface_in(sys: &Path) -> Option<String> {
+    std::fs::read_dir(sys.join("class/net")).ok()?.flatten().find_map(|entry| {
+        let interface = std::fs::canonicalize(entry.path().join("device")).ok()?;
+        let product = std::fs::read_to_string(interface.parent()?.join("product")).ok()?;
+        (product.trim() == livi_link_host::LINK_PRODUCT)
+            .then(|| entry.file_name().to_string_lossy().into_owned())
+    })
+}
+
+pub fn iface_up(iface: &str) -> bool {
+    std::fs::read_to_string(format!("/sys/class/net/{iface}/flags")).is_ok_and(|f| flags_up(&f))
+}
+
+/// `IFF_UP` in the hex flags sysfs shows.
+fn flags_up(flags: &str) -> bool {
+    u32::from_str_radix(flags.trim().trim_start_matches("0x"), 16).is_ok_and(|f| f & 1 != 0)
+}
+
+/// Works when this tool runs as root, otherwise the caller asks for it.
+pub fn bring_up(iface: &str) -> bool {
+    std::process::Command::new("ip")
+        .args(["link", "set", iface, "up"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+        && iface_up(iface)
 }
 
 /// NCM is a CDC communication interface of subclass 0x0d.
@@ -179,6 +229,42 @@ mod tests {
         assert_eq!(p.len(), 28);
         assert_eq!(u32::from_le_bytes(p[..4].try_into().unwrap()), 800);
         assert_eq!(u32::from_le_bytes(p[24..].try_into().unwrap()), 2); // work mode CarPlay
+    }
+
+    #[test]
+    fn the_link_local_address_is_the_one_the_bootstrap_mac_gives() {
+        assert_eq!(link_local(BOOTSTRAP_MAC).to_string(), "fe80::c08e:30ff:fe53:4801");
+        let mac = BOOTSTRAP_MAC.map(|b| format!("{b:02x}")).join(":");
+        assert!(BOOTSTRAP.contains(&format!("ifconfig ncm0 hw ether {mac}")));
+    }
+
+    #[test]
+    fn only_the_up_flag_counts() {
+        assert!(flags_up("0x1003\n"));
+        assert!(!flags_up("0x1002\n"));
+        assert!(!flags_up("garbage"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_interface_is_found_by_the_usb_product_behind_it() {
+        let sys = std::env::temp_dir().join(format!("livi-sys-{}", std::process::id()));
+        let usb = |name: &str, product: &str| {
+            let device = sys.join("devices").join(name);
+            std::fs::create_dir_all(device.join(format!("{name}:1.0"))).unwrap();
+            std::fs::write(device.join("product"), format!("{product}\n")).unwrap();
+            device.join(format!("{name}:1.0"))
+        };
+        let net = |iface: &str, interface: &Path| {
+            std::fs::create_dir_all(sys.join("class/net").join(iface)).unwrap();
+            std::os::unix::fs::symlink(interface, sys.join("class/net").join(iface).join("device"))
+                .unwrap();
+        };
+        net("eno1", &usb("1-2", "Some Adapter"));
+        assert_eq!(link_iface_in(&sys), None);
+        net("wwx2698d934fda1", &usb("1-4", "LIVI Link"));
+        assert_eq!(link_iface_in(&sys).as_deref(), Some("wwx2698d934fda1"));
+        std::fs::remove_dir_all(&sys).unwrap();
     }
 
     /// The host names the interface on first sight and keeps that name, so the bootstrap announces

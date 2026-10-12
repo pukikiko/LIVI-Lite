@@ -2,7 +2,7 @@
 //!   channels | status | on | off | apply | save | down | deauth | watch
 //!   set <ssid|country|channel|width|passphrase> <value>
 //!   bt on | bt off
-//!   iap <order>   for the Bluetooth accessory, answered the way iapd answers
+//!   accessory <order>   for the Bluetooth accessory, answered the way accessoryd answers
 //! `on`, `off` and `bt` are kept on the dongle, a boot brings back what was switched last.
 //! `down` takes the access point off the air until the next apply or boot, nothing is kept.
 //! `deauth` sends every station off, `deauth <count>` says how many.
@@ -16,7 +16,9 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-use livi_wifi::listing;
+pub use livi_wifi::ap_config::Standards;
+use livi_wifi::ap_config::{self, Wanted, setting};
+use livi_wifi::{Channel, Security, listing};
 
 use crate::hostapd::{self, Station};
 use crate::radio::{self, Radio};
@@ -30,22 +32,15 @@ const WATCH_RETRY: Duration = Duration::from_secs(1);
 const HOSTAPD: &str = "/usr/sbin/hostapd";
 const IFACE: &str = "wlan0";
 const BT: &str = "hci0";
+const BT_MAC: &str = "/tmp/livi/bt-mac";
 const BT_DEV: u16 = 0;
-/// Loads the driver and brings hci0 up with btd and iapd, for what a boot left out.
+/// Loads the driver and brings hci0 up with btd and accessoryd, for what a boot left out.
 const LIVI_RADIO: &str = "/usr/bin/livi-radio";
 const ACCESSORY: SocketAddr =
     SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, livi_net::port::ACCESSORY));
 const ACCESSORY_WAIT: Duration = Duration::from_secs(3);
 
 pub type OnSave = Box<dyn Fn() + Send + Sync>;
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Standards {
-    /// 802.11ac.
-    pub vht: bool,
-    /// 802.11ax.
-    pub he: bool,
-}
 
 pub struct Ap {
     base: PathBuf,
@@ -83,20 +78,6 @@ impl Ap {
     }
 }
 
-#[derive(Default)]
-struct Wanted {
-    ssid: Option<String>,
-    country: Option<String>,
-    channel: Option<u32>,
-    width: Option<u32>,
-    passphrase: Option<String>,
-    /// Some(false) once the radio turned 802.11ac down, so a saved config does not ask again.
-    ac: Option<bool>,
-    /// The same for 802.11ax. None when never asked, so a config saved without it gets it tried
-    /// once.
-    ax: Option<bool>,
-}
-
 enum Cmd<'a> {
     Channels,
     Status,
@@ -110,7 +91,7 @@ enum Cmd<'a> {
     On,
     Off,
     Bt(bool),
-    Iap(&'a str),
+    Accessory(&'a str),
     Empty,
     Unknown(&'a str),
 }
@@ -182,7 +163,7 @@ pub fn serve<S: std::io::Read + Write>(io: &mut S, ap: &Mutex<Ap>) {
                 }
             }
             // Never waits for the access point, an apply can take half a minute
-            Cmd::Iap(order) => accessory(ACCESSORY, order),
+            Cmd::Accessory(order) => accessory(ACCESSORY, order),
             Cmd::Empty => continue,
             Cmd::Unknown(what) => format!("error unknown command {what}\n"),
         };
@@ -212,7 +193,7 @@ fn command(line: &str) -> Cmd<'_> {
             "off" => Cmd::Bt(false),
             _ => Cmd::Unknown(line),
         },
-        "iap" if !rest.trim().is_empty() => Cmd::Iap(rest.trim()),
+        "accessory" if !rest.trim().is_empty() => Cmd::Accessory(rest.trim()),
         "set" => match rest.split_once(' ') {
             Some((key, value)) => Cmd::Set(key, value),
             None => Cmd::Unknown(line),
@@ -269,7 +250,7 @@ fn remember(wanted: &mut Wanted, key: &str, value: &str) -> Result<(), String> {
             if !(1..=196).contains(&channel) {
                 return Err("channel is out of range".into());
             }
-            wanted.channel = Some(channel);
+            wanted.channel = Some(Channel::of_number(channel));
         }
         "width" => {
             let width = value.parse::<u32>().map_err(|_| "width must be a number")?;
@@ -289,82 +270,6 @@ fn remember(wanted: &mut Wanted, key: &str, value: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn config(base: &str, wanted: &Wanted, standards: Standards) -> String {
-    // The base pins vht_oper_centr_freq_seg0_idx to its own channel and hostapd refuses any
-    // other, so the channel lines are regenerated for the wanted channel and width.
-    let mut out = String::new();
-    for line in base.lines() {
-        let replaced = match setting(line) {
-            Some("ssid") => wanted.ssid.is_some(),
-            Some("country_code") => wanted.country.is_some(),
-            Some(
-                "channel"
-                | "hw_mode"
-                | "ht_capab"
-                | "vendor_elements"
-                | "assocresp_elements"
-                | "ieee80211ac"
-                | "vht_capab"
-                | "vht_oper_chwidth"
-                | "vht_oper_centr_freq_seg0_idx"
-                | "ieee80211ax"
-                | "he_oper_chwidth"
-                | "he_oper_centr_freq_seg0_idx",
-            ) => wanted.channel.is_some(),
-            Some("wpa_passphrase") => wanted.passphrase.is_some(),
-            Some("ctrl_interface") => true,
-            _ => false,
-        };
-        if !replaced {
-            out.push_str(line);
-            out.push('\n');
-        }
-    }
-    if let Some(country) = &wanted.country {
-        out.push_str(&format!("country_code={country}\n"));
-    }
-    if let Some(channel) = wanted.channel {
-        let ie = apple_ie(channel);
-        let width = wanted.width.unwrap_or(40);
-        let ht_capab = if width >= 40 {
-            format!("[SHORT-GI-20][SHORT-GI-40]{}", ht40(channel))
-        } else {
-            "[SHORT-GI-20]".to_string()
-        };
-        out.push_str(&format!(
-            "hw_mode={}\nchannel={channel}\nht_capab={ht_capab}\n\
-             vendor_elements={ie}\nassocresp_elements={ie}\n",
-            band(channel)
-        ));
-        if standards.vht && wanted.ac != Some(false) && band(channel) == "a" {
-            let centre = vht_centre(channel).filter(|_| width >= 80);
-            match centre {
-                Some(centre) => out.push_str(&format!(
-                    "ieee80211ac=1\nvht_capab=[SHORT-GI-80]\nvht_oper_chwidth=1\n\
-                     vht_oper_centr_freq_seg0_idx={centre}\n"
-                )),
-                None => out.push_str("ieee80211ac=1\nvht_oper_chwidth=0\n"),
-            }
-            match (standards.he, wanted.ax, centre) {
-                (false, ..) => {}
-                (true, Some(false), _) => out.push_str("ieee80211ax=0\n"),
-                (true, _, Some(centre)) => out.push_str(&format!(
-                    "ieee80211ax=1\nhe_oper_chwidth=1\nhe_oper_centr_freq_seg0_idx={centre}\n"
-                )),
-                (true, _, None) => out.push_str("ieee80211ax=1\nhe_oper_chwidth=0\n"),
-            }
-        }
-    }
-    if let Some(ssid) = &wanted.ssid {
-        out.push_str(&format!("ssid={ssid}\n"));
-    }
-    if let Some(passphrase) = &wanted.passphrase {
-        out.push_str(&format!("wpa_passphrase={passphrase}\n"));
-    }
-    out.push_str(&ctrl_line());
-    out
-}
-
 fn ctrl_line() -> String {
     format!("ctrl_interface={}\n", hostapd::CTRL_DIR)
 }
@@ -380,14 +285,6 @@ fn with_ctrl(path: &std::path::Path) -> Result<(), String> {
         .map_err(|e| format!("{}: {e}", path.display()))
 }
 
-fn setting(line: &str) -> Option<&str> {
-    let line = line.trim();
-    if line.starts_with('#') {
-        return None;
-    }
-    line.split_once('=').map(|(key, _)| key.trim())
-}
-
 fn await_radio() -> Result<(), String> {
     let path = format!("/sys/class/net/{IFACE}");
     for _ in 0..RADIO_TRIES {
@@ -397,28 +294,6 @@ fn await_radio() -> Result<(), String> {
         std::thread::sleep(RADIO_POLL);
     }
     Err(format!("{IFACE} never appeared"))
-}
-
-fn band(channel: u32) -> &'static str {
-    if channel <= 14 { "g" } else { "a" }
-}
-
-fn apple_ie(channel: u32) -> String {
-    let band_bit: u8 = if channel >= 36 { 0x01 } else { 0x02 };
-    format!("dd0800a04000000200{:02x}", 0x20 | band_bit)
-}
-
-fn vht_centre(channel: u32) -> Option<u32> {
-    match channel {
-        36..=48 => Some(42),
-        149..=161 => Some(155),
-        _ => None,
-    }
-}
-
-fn ht40(channel: u32) -> &'static str {
-    let up = if channel <= 14 { channel <= 7 } else { (channel / 4) % 2 == 1 };
-    if up { "[HT40+]" } else { "[HT40-]" }
 }
 
 fn apply(ap: &mut Ap, wanted: &Wanted) -> Result<(), String> {
@@ -431,7 +306,7 @@ fn apply(ap: &mut Ap, wanted: &Wanted) -> Result<(), String> {
     if let Some(parent) = ap.live[0].parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let text = config(&base, wanted, ap.standards);
+    let text = ap_config::config(&base, wanted, &ap.standards.into(), hostapd::CTRL_DIR);
     if running() && std::fs::read_to_string(&ap.config).is_ok_and(|current| current == text) {
         return Ok(());
     }
@@ -464,7 +339,12 @@ fn save(ap: &Ap) -> Result<(), String> {
         std::fs::read_to_string(&ap.config).map_err(|e| format!("{}: {e}", ap.config.display()))?;
     let base =
         std::fs::read_to_string(&ap.base).map_err(|e| format!("{}: {e}", ap.base.display()))?;
-    let next = config(&base, &settings_of(&live), ap.standards);
+    let next = ap_config::config(
+        &base,
+        &ap_config::settings_of(&live),
+        &ap.standards.into(),
+        hostapd::CTRL_DIR,
+    );
     if next == base {
         return Ok(());
     }
@@ -476,30 +356,6 @@ fn save(ap: &Ap) -> Result<(), String> {
         cb();
     }
     Ok(())
-}
-
-fn settings_of(text: &str) -> Wanted {
-    let value = |key: &str| {
-        text.lines()
-            .rfind(|line| setting(line) == Some(key))
-            .and_then(|line| line.split_once('='))
-            .map(|(_, value)| value.trim().to_string())
-    };
-    Wanted {
-        ssid: value("ssid"),
-        country: value("country_code"),
-        channel: value("channel").and_then(|c| c.parse().ok()),
-        width: Some(if value("vht_oper_chwidth").as_deref() == Some("1") {
-            80
-        } else if value("ht_capab").is_some_and(|c| c.contains("[HT40")) {
-            40
-        } else {
-            20
-        }),
-        passphrase: value("wpa_passphrase"),
-        ac: Some(value("ieee80211ac").as_deref() == Some("1")),
-        ax: value("ieee80211ax").map(|ax| ax == "1"),
-    }
 }
 
 fn on(ap: &mut Ap) -> Result<(), String> {
@@ -522,7 +378,7 @@ fn start_weakening(ap: &mut Ap, path: &std::path::Path) -> Result<(), String> {
         Err(refused) => refused,
     };
     let mut text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    while let Some((next, step)) = weaker(&text) {
+    while let Some((next, step)) = ap_config::weaker(&text) {
         eprintln!("[wifid] radio refused ({refused}), trying {step}");
         stop(ap);
         std::fs::write(path, &next).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -532,59 +388,6 @@ fn start_weakening(ap: &mut Ap, path: &std::path::Path) -> Result<(), String> {
         text = next;
     }
     Err(refused)
-}
-
-/// `ieee80211ax=0` stays in, so a saved config remembers that the radio refused it.
-fn weaker(config: &str) -> Option<(String, &'static str)> {
-    let value = |key: &str| {
-        config
-            .lines()
-            .rfind(|line| setting(line) == Some(key))
-            .and_then(|line| line.split_once('='))
-            .map(|(_, value)| value.trim().to_string())
-    };
-    let channel: u32 = value("channel")?.parse().ok()?;
-    let mut lines: Vec<String> = config.lines().map(str::to_string).collect();
-    let mut set = |key: &str, to: Option<&str>| {
-        let had = lines.iter().any(|line| setting(line) == Some(key));
-        lines.retain(|line| setting(line) != Some(key));
-        if let Some(to) = to.filter(|_| had) {
-            lines.push(format!("{key}={to}"));
-        }
-    };
-    let step = if value("vht_oper_chwidth").as_deref() == Some("1") {
-        set("vht_oper_chwidth", Some("0"));
-        set("vht_oper_centr_freq_seg0_idx", None);
-        set("vht_capab", None);
-        set("he_oper_chwidth", Some("0"));
-        set("he_oper_centr_freq_seg0_idx", None);
-        "40 MHz"
-    } else if value("ieee80211ax").as_deref() == Some("1") {
-        set("ieee80211ax", Some("0"));
-        set("he_oper_chwidth", None);
-        set("he_oper_centr_freq_seg0_idx", None);
-        "802.11ac"
-    } else if value("ieee80211ac").as_deref() == Some("1") {
-        for key in ["ieee80211ac", "vht_capab", "vht_oper_chwidth", "vht_oper_centr_freq_seg0_idx"]
-        {
-            set(key, None);
-        }
-        "802.11n"
-    } else if value("ht_capab").is_some_and(|c| c.contains("[HT40")) {
-        set("ht_capab", Some("[SHORT-GI-20]"));
-        "20 MHz"
-    } else if band(channel) == "a" {
-        let ie = apple_ie(6);
-        set("hw_mode", Some("g"));
-        set("channel", Some("6"));
-        set("ht_capab", Some("[SHORT-GI-20]"));
-        set("vendor_elements", Some(ie.as_str()));
-        set("assocresp_elements", Some(ie.as_str()));
-        "2.4 GHz channel 6"
-    } else {
-        return None;
-    };
-    Some((lines.join("\n") + "\n", step))
 }
 
 fn deauth() -> usize {
@@ -629,11 +432,11 @@ fn off(ap: &mut Ap) {
 fn bluetooth(up: bool) -> Result<(), String> {
     if !up {
         // btd first: while a host tunnels, it holds hci0 and hci0 will not go down.
-        livi_radio("bt-off", "btd and iapd would not stop")?;
+        livi_radio("bt-off", "btd and accessoryd would not stop")?;
         return livi_btd::hci::down(BT_DEV).map_err(|e| format!("{BT} would not go down: {e}"));
     }
     driver();
-    // A boot with Bluetooth off started neither btd nor iapd, they only run once hci0 is up.
+    // A boot with Bluetooth off started neither btd nor accessoryd, they only run once hci0 is up.
     livi_radio("bt", &format!("{BT} would not come up"))
 }
 
@@ -706,7 +509,10 @@ fn status(ap: &Ap) -> String {
     if let Ok(mac) = std::fs::read_to_string(format!("/sys/class/net/{IFACE}/address")) {
         out.push_str(&format!("mac {}\n", mac.trim()));
     }
-    if let Ok(mac) = std::fs::read_to_string(format!("/sys/class/bluetooth/{BT}/address")) {
+    // The vendor driver has no address attribute, livi-bt-up writes it down instead.
+    if let Ok(mac) = std::fs::read_to_string(format!("/sys/class/bluetooth/{BT}/address"))
+        .or_else(|_| std::fs::read_to_string(BT_MAC))
+    {
         out.push_str(&format!("btmac {}\n", mac.trim()));
     }
     out.push_str(if ap.config == ap.base { "config fallback\n" } else { "config host\n" });
@@ -717,6 +523,7 @@ fn status(ap: &Ap) -> String {
                 out.push_str(&format!("{key} {value}\n"));
             }
         }
+        out.push_str(&format!("security {}\n", Security::of_hostapd(&text)));
     }
     let counter = |dir: &str| {
         std::fs::read_to_string(format!("/sys/class/net/{IFACE}/statistics/{dir}_bytes"))
@@ -818,181 +625,12 @@ fn running() -> bool {
 mod tests {
     use super::*;
 
-    const BASE: &str = "interface=wlan0\nssid=LIVI-Link\nhw_mode=a\nchannel=36\nieee80211ac=1\n\
-        ht_capab=[HT40+][SHORT-GI-20][SHORT-GI-40]\nvht_capab=[SHORT-GI-80]\n\
-        vht_oper_chwidth=1\nvht_oper_centr_freq_seg0_idx=42\nwpa_passphrase=livilink\n";
-
-    const N_ONLY: Standards = Standards { vht: false, he: false };
-    const AC_ONLY: Standards = Standards { vht: true, he: false };
-    const AC_AX: Standards = Standards { vht: true, he: true };
-
-    fn wanted(channel: u32, width: Option<u32>) -> Wanted {
-        Wanted { channel: Some(channel), width, ..Wanted::default() }
-    }
-
-    fn lines(config: &str) -> Vec<&str> {
-        config.lines().collect()
-    }
-
-    #[test]
-    fn eighty_megahertz_gets_its_centre_where_the_block_needs_no_dfs() {
-        let out = config(BASE, &wanted(149, Some(80)), AC_AX);
-        let out = lines(&out);
-        assert!(out.contains(&"vht_oper_chwidth=1"));
-        assert!(out.contains(&"vht_oper_centr_freq_seg0_idx=155"));
-        assert!(out.contains(&"ht_capab=[SHORT-GI-20][SHORT-GI-40][HT40+]"));
-        assert!(!out.contains(&"vht_oper_centr_freq_seg0_idx=42"));
-    }
-
-    #[test]
-    fn eighty_megahertz_on_a_dfs_channel_stays_at_forty() {
-        let out = config(BASE, &wanted(100, Some(80)), AC_AX);
-        let out = lines(&out);
-        assert!(out.contains(&"vht_oper_chwidth=0"));
-        assert!(!out.iter().any(|l| l.starts_with("vht_oper_centr_freq_seg0_idx")));
-    }
-
-    #[test]
-    fn a_host_that_names_no_width_gets_forty() {
-        let out = config(BASE, &wanted(36, None), AC_AX);
-        let out = lines(&out);
-        assert!(out.contains(&"vht_oper_chwidth=0"));
-        assert!(out.contains(&"ht_capab=[SHORT-GI-20][SHORT-GI-40][HT40+]"));
-    }
-
-    #[test]
-    fn twenty_megahertz_drops_the_secondary_channel() {
-        let out = config(BASE, &wanted(36, Some(20)), AC_AX);
-        let out = lines(&out);
-        assert!(out.contains(&"ht_capab=[SHORT-GI-20]"));
-        assert!(out.contains(&"vht_oper_chwidth=0"));
-    }
-
-    #[test]
-    fn a_saved_config_keeps_its_width() {
-        for width in [20, 40, 80] {
-            let live = config(BASE, &wanted(36, Some(width)), AC_AX);
-            assert_eq!(settings_of(&live).width, Some(width));
-        }
-    }
-
-    #[test]
-    fn a_base_that_lost_its_vht_lines_gets_them_back() {
-        let worn = "interface=wlan0\nssid=LIVI\nieee80211n=1\nchannel=36\n\
-            ht_capab=[SHORT-GI-20][SHORT-GI-40][HT40+]\n";
-        let out = config(worn, &wanted(36, Some(80)), AC_AX);
-        let out = lines(&out);
-        assert!(out.contains(&"ieee80211ac=1"));
-        assert!(out.contains(&"vht_oper_chwidth=1"));
-        assert!(out.contains(&"vht_oper_centr_freq_seg0_idx=42"));
-    }
-
-    #[test]
-    fn a_radio_without_vht_never_gets_it() {
-        let out = config(BASE, &wanted(36, Some(80)), N_ONLY);
-        let out = lines(&out);
-        assert!(!out.iter().any(|l| l.starts_with("ieee80211a") || l.starts_with("vht_")));
-        assert!(!out.iter().any(|l| l.starts_with("he_")));
-        assert!(out.contains(&"ht_capab=[SHORT-GI-20][SHORT-GI-40][HT40+]"));
-    }
-
-    #[test]
-    fn a_radio_without_he_gets_802_11ac_but_never_802_11ax() {
-        let worn = "interface=wlan0\nchannel=36\nieee80211ax=1\nhe_oper_chwidth=1\n";
-        let out = config(worn, &wanted(36, Some(80)), AC_ONLY);
-        let out = lines(&out);
-        assert!(out.contains(&"ieee80211ac=1"));
-        assert!(out.contains(&"vht_oper_chwidth=1"));
-        assert!(!out.iter().any(|l| l.starts_with("ieee80211ax") || l.starts_with("he_")));
-    }
-
-    #[test]
-    fn eighty_megahertz_asks_for_802_11ax_on_the_same_block() {
-        let out = config(BASE, &wanted(149, Some(80)), AC_AX);
-        let out = lines(&out);
-        assert!(out.contains(&"ieee80211ax=1"));
-        assert!(out.contains(&"he_oper_chwidth=1"));
-        assert!(out.contains(&"he_oper_centr_freq_seg0_idx=155"));
-    }
-
-    #[test]
-    fn forty_megahertz_asks_for_802_11ax_without_a_centre() {
-        let out = config(BASE, &wanted(36, Some(40)), AC_AX);
-        let out = lines(&out);
-        assert!(out.contains(&"ieee80211ax=1"));
-        assert!(out.contains(&"he_oper_chwidth=0"));
-        assert!(!out.iter().any(|l| l.starts_with("he_oper_centr_freq_seg0_idx")));
-    }
-
-    #[test]
-    fn a_refusing_radio_is_asked_for_less_step_by_step() {
-        let mut text = config(BASE, &wanted(36, Some(80)), AC_AX);
-        let mut steps = Vec::new();
-        while let Some((next, step)) = weaker(&text) {
-            steps.push(step);
-            text = next;
-        }
-        assert_eq!(steps, ["40 MHz", "802.11ac", "802.11n", "20 MHz", "2.4 GHz channel 6"]);
-        let ie = format!("vendor_elements={}", apple_ie(6));
-        let out = lines(&text);
-        assert!(out.contains(&"hw_mode=g"));
-        assert!(out.contains(&"channel=6"));
-        assert!(out.contains(&"ht_capab=[SHORT-GI-20]"));
-        assert!(out.contains(&ie.as_str()));
-        assert!(!out.iter().any(|l| l.starts_with("ieee80211ac") || l.starts_with("vht_")));
-        assert!(!out.iter().any(|l| l.starts_with("he_") || *l == "ieee80211ax=1"));
-        assert!(out.contains(&"wpa_passphrase=livilink"));
-    }
-
-    #[test]
-    fn forty_megahertz_keeps_802_11ax_until_the_radio_refuses_that_too() {
-        let live = config(BASE, &wanted(36, Some(80)), AC_AX);
-        let (forty, _) = weaker(&live).unwrap();
-        let forty = lines(&forty);
-        assert!(forty.contains(&"ieee80211ax=1"));
-        assert!(forty.contains(&"he_oper_chwidth=0"));
-        assert!(!forty.iter().any(|l| l.starts_with("he_oper_centr_freq_seg0_idx")));
-    }
-
-    #[test]
-    fn a_config_the_radio_ran_without_ax_is_saved_without_asking_again() {
-        let live = config(BASE, &wanted(36, Some(80)), AC_AX);
-        let (forty, _) = weaker(&live).unwrap();
-        let (ac, _) = weaker(&forty).unwrap();
-        let saved = config(BASE, &settings_of(&ac), AC_AX);
-        let saved = lines(&saved);
-        assert!(saved.contains(&"ieee80211ax=0"));
-        assert!(!saved.iter().any(|l| l.starts_with("he_")));
-        assert!(saved.contains(&"ieee80211ac=1"));
-    }
-
-    #[test]
-    fn a_config_saved_before_802_11ax_gets_it_tried() {
-        let before = config(BASE, &Wanted { ax: Some(false), ..wanted(36, Some(80)) }, AC_AX)
-            .replace("ieee80211ax=0\n", "");
-        let out = config(BASE, &settings_of(&before), AC_AX);
-        assert!(lines(&out).contains(&"ieee80211ax=1"));
-    }
-
-    #[test]
-    fn a_config_the_radio_ran_without_ac_is_saved_without_it() {
-        let live = config(BASE, &wanted(36, Some(80)), AC_AX);
-        let (forty, _) = weaker(&live).unwrap();
-        let (ac, _) = weaker(&forty).unwrap();
-        let (n, _) = weaker(&ac).unwrap();
-        let saved = config(BASE, &settings_of(&n), AC_AX);
-        let saved = lines(&saved);
-        assert!(!saved.iter().any(|l| l.starts_with("ieee80211ac") || l.starts_with("vht_")));
-        assert!(!saved.iter().any(|l| l.starts_with("he_") || *l == "ieee80211ax=1"));
-        assert!(saved.contains(&"ht_capab=[SHORT-GI-20][SHORT-GI-40][HT40+]"));
-    }
-
     #[test]
     fn a_setting_this_dongle_does_not_know_is_dropped_not_refused() {
         let mut w = Wanted::default();
         assert!(remember(&mut w, "he_bss_color", "12").is_ok());
         assert!(remember(&mut w, "channel", "44").is_ok());
-        assert_eq!(w.channel, Some(44));
+        assert_eq!(w.channel, Some(Channel::of_number(44)));
     }
 
     #[test]
@@ -1004,7 +642,7 @@ mod tests {
         assert!(remember(&mut w, "width", "wide").is_err());
     }
 
-    fn iapd(answer: &'static str) -> (SocketAddr, std::thread::JoinHandle<String>) {
+    fn accessoryd(answer: &'static str) -> (SocketAddr, std::thread::JoinHandle<String>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let at = listener.local_addr().unwrap();
         let heard = std::thread::spawn(move || {
@@ -1034,14 +672,6 @@ mod tests {
     }
 
     #[test]
-    fn every_config_opens_the_control_socket_once() {
-        let worn = format!("{BASE}ctrl_interface=/var/run/hostapd\n");
-        let out = config(&worn, &wanted(36, Some(80)), AC_AX);
-        assert_eq!(out.matches("ctrl_interface=").count(), 1);
-        assert!(out.contains("ctrl_interface=/tmp/livi/hostapd\n"));
-    }
-
-    #[test]
     fn an_old_config_gets_the_control_socket_before_hostapd_starts() {
         let path = std::env::temp_dir().join(format!("hostapd-ctrl-{}.conf", std::process::id()));
         std::fs::write(&path, "interface=wlan0\nssid=LIVI").unwrap();
@@ -1056,21 +686,21 @@ mod tests {
     }
 
     #[test]
-    fn an_iap_order_goes_to_the_accessory_and_comes_back_whole() {
-        assert!(matches!(command("iap targets aa bb"), Cmd::Iap("targets aa bb")));
-        assert!(matches!(command("iap"), Cmd::Unknown("iap")));
+    fn an_accessory_order_goes_to_the_accessory_and_comes_back_whole() {
+        assert!(matches!(command("accessory targets aa bb"), Cmd::Accessory("targets aa bb")));
+        assert!(matches!(command("accessory"), Cmd::Unknown("accessory")));
 
-        let (at, heard) = iapd("bonds 1\noffered on\ntargets 0\nok\n");
+        let (at, heard) = accessoryd("bonds 1\noffered on\ntargets 0\nok\n");
         assert_eq!(accessory(at, "status"), "bonds 1\noffered on\ntargets 0\nok\n");
         assert_eq!(heard.join().unwrap(), "status\n");
 
-        let (at, _) = iapd("error not an address\n");
+        let (at, _) = accessoryd("error not an address\n");
         assert_eq!(accessory(at, "disconnect x"), "error not an address\n");
     }
 
     #[test]
     fn an_accessory_that_is_gone_or_hangs_up_is_an_error() {
-        let (at, _) = iapd("bonds 1\n");
+        let (at, _) = accessoryd("bonds 1\n");
         assert!(accessory(at, "status").starts_with("error accessory: "));
         let gone = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
         assert!(accessory(gone, "on").starts_with("error accessory: "));
