@@ -69,8 +69,9 @@ they do not apply to this fork.
 
 What works here: wired and wireless CarPlay, wired and (on Linux) wireless
 Android Auto, the devices, media, settings and projection screens, display
-calibration, GPS and telemetry plumbing, key bindings with D-pad/rotary input
-and the update check/download/install flow. What is missing: the dash/aux
+calibration, GPS and telemetry plumbing, key bindings with D-pad/rotary input,
+the update check/download/install flow and the startup prompt for missing
+system packages. What is missing: the dash/aux
 windows, the telemetry/dashboards UI, the camera and custom pages and the
 packaging/updater tooling (see the limitations note above).
 

@@ -39,6 +39,11 @@ export struct InfoRow {
     value: string,
 }
 
+export struct PackageRow {
+    name: string,
+    purpose: string,
+}
+
 export global App {
     // Navigation: 0 = projection surface, 1 = devices, 2 = media, 3 = settings.
     in-out property <int> page: 0;
@@ -175,6 +180,14 @@ export global App {
     in-out property <bool> update-available: false;
     in-out property <string> update-version: "";
     in-out property <string> update-error: "";
+    // Missing-packages prompt from core (state.packages). Phase stays "idle"
+    // while there is nothing to ask about.
+    in-out property <bool> packages-visible: false;
+    in-out property <string> packages-phase: "idle";
+    in-out property <string> packages-message: "";
+    in-out property <string> packages-detail: "";
+    in-out property <bool> packages-can-install: false;
+    in-out property <[PackageRow]> packages-items: [];
     // The binding whose key is being captured, empty when none.
     in-out property <string> capture-binding: "";
     // FFT bands while the media page draws them.
@@ -233,6 +246,7 @@ export global App {
     callback restart-app();
     callback quit-app();
     callback update-action(string);
+    callback packages-action(string);
     callback key-event(string, bool, bool);
     callback begin-capture(string);
     callback clear-binding(string);

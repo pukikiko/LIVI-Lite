@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use livi_core_proto::PROTOCOL;
 use livi_core_proto::frame::{Decoder, FrameError, encode};
-use livi_core_proto::message::{Action, FromCore, MediaControl, ToCore};
+use livi_core_proto::message::{Action, FromCore, MediaControl, PackagesChoice, ToCore};
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::unix::OwnedWriteHalf;
@@ -73,6 +73,13 @@ impl Core {
 
     fn ask_update(&self, ask: UpdateAsk) -> Result<(), String> {
         self.asks.update.send(ask).map_err(|_| "updates are not available".to_string())
+    }
+
+    fn ask_packages(&self, choice: PackagesChoice) -> Result<(), String> {
+        self.asks
+            .packages
+            .send(choice)
+            .map_err(|_| "the package check is not available".to_string())
     }
 
     pub fn relaunch(&self, program: PathBuf) {
@@ -145,6 +152,7 @@ impl Core {
             Action::DownloadUpdate => self.ask_update(UpdateAsk::Download),
             Action::InstallUpdate => self.ask_update(UpdateAsk::Install),
             Action::AbortUpdate => self.ask_update(UpdateAsk::Abort),
+            Action::Packages { choice } => self.ask_packages(choice),
         }
     }
 }
@@ -316,7 +324,7 @@ mod tests {
     }
 
     fn start(dir: &TempDir) -> (Arc<Core>, std::path::PathBuf) {
-        let (core, path, _, _, _) = start_with_asks(dir);
+        let (core, path, _, _, _, _) = start_with_asks(dir);
         (core, path)
     }
 
@@ -328,6 +336,7 @@ mod tests {
         crate::projection::UiAsks,
         crate::projection::DongleAsks,
         crate::projection::UpdateAsks,
+        crate::projection::PackagesAsks,
     ) {
         let livi = PerScreen { main: Front::Livi, dash: Front::Livi, aux: Front::Livi };
         let hub = Hub::new(State {
@@ -339,17 +348,18 @@ mod tests {
             system: Default::default(),
             devices: Default::default(),
             update: Default::default(),
+            packages: Default::default(),
             config: defaults(),
         });
         let file = ConfigFile::new(dir.0.join("config.json"), dir.0.join("backup.json"));
         // SAFETY: geteuid has no preconditions.
         let uid = unsafe { libc::geteuid() };
-        let (senders, asks, dongle, update) = crate::projection::ui_channels(livi);
+        let (senders, asks, dongle, update, packages) = crate::projection::ui_channels(livi);
         let core = Arc::new(Core::new(hub, file, uid, Arc::new(Notify::new()), senders));
         let path = dir.0.join("core.sock");
         let listener = UnixListener::bind(&path).unwrap();
         tokio::spawn(serve(core.clone(), listener));
-        (core, path, asks, dongle, update)
+        (core, path, asks, dongle, update, packages)
     }
 
     #[tokio::test]
@@ -359,7 +369,7 @@ mod tests {
         use livi_core_proto::state::Screen;
 
         let dir = TempDir::new();
-        let (_core, path, mut asks, mut dongle, mut update) = start_with_asks(&dir);
+        let (_core, path, mut asks, mut dongle, mut update, mut packages) = start_with_asks(&dir);
         let mut ui = Peer::hello(&path).await;
         let show = Action::Show { screen: Screen::Main, front: Front::Projection };
         ui.send(&ToCore::Action { id: 1, action: show }).await;
@@ -389,6 +399,10 @@ mod tests {
             assert_eq!(ui.recv().await, Some(FromCore::Reply { id, error: None }));
             assert_eq!(update.recv().await, Some(ask));
         }
+        let packages_action = Action::Packages { choice: PackagesChoice::Install };
+        ui.send(&ToCore::Action { id: 10, action: packages_action }).await;
+        assert_eq!(ui.recv().await, Some(FromCore::Reply { id: 10, error: None }));
+        assert_eq!(packages.recv().await, Some(PackagesChoice::Install));
         let key = Input::Key { code: "KeyA".into(), down: true };
         ui.send(&ToCore::Input { input: key.clone() }).await;
         ui.send(&ToCore::Path { path: "/media".into() }).await;
@@ -429,7 +443,7 @@ mod tests {
     #[tokio::test]
     async fn the_dongle_is_asked_for_rates_while_a_client_shows_the_link_speed() {
         let dir = TempDir::new();
-        let (_core, path, _, dongle, _) = start_with_asks(&dir);
+        let (_core, path, _, dongle, _, _) = start_with_asks(&dir);
         let viewers = dongle.link_speed_viewers;
         let mut settings = Peer::hello(&path).await;
         let mut other = Peer::hello(&path).await;
@@ -484,6 +498,15 @@ mod tests {
         assert_eq!(
             ui.recv().await,
             Some(FromCore::Reply { id: 3, error: Some("updates are not available".into()) })
+        );
+        let later = Action::Packages { choice: PackagesChoice::Later };
+        ui.send(&ToCore::Action { id: 4, action: later }).await;
+        assert_eq!(
+            ui.recv().await,
+            Some(FromCore::Reply {
+                id: 4,
+                error: Some("the package check is not available".into())
+            })
         );
         assert_eq!(core.hub.config().hu_volume, 0.95);
     }

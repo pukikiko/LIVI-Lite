@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use client::{Client, CoreEvent, livi_log};
 use livi_core_proto::input::{Input, Phase, Point};
-use livi_core_proto::message::{Action, MediaControl};
+use livi_core_proto::message::{Action, MediaControl, PackagesChoice};
 use livi_core_proto::state::{Front, Screen};
 use serde_json::{Map, Value, json};
 use slint::{Image, Model, ModelRc, SharedPixelBuffer, SharedString, VecModel};
@@ -238,6 +238,9 @@ fn apply_state(ui: &MainWindow, ctx: &Arc<Mutex<Ctx>>, state: &Value) {
     if let Some(update) = state.get("update") {
         apply_update(ui, update);
     }
+    if let Some(packages) = state.get("packages") {
+        apply_packages(ui, packages);
+    }
     if let Some(front) = state.pointer("/front/main").and_then(Value::as_str) {
         apply_front(ui, ctx, front);
     }
@@ -458,6 +461,68 @@ fn apply_update(ui: &MainWindow, update: &Value) {
     app.set_update_available(latest.is_some() && phase == "idle");
     app.set_update_version(latest.unwrap_or("").into());
     app.set_update_error(error.unwrap_or("").into());
+}
+
+/// The missing-packages prompt, worded like upstream's Electron dialog. Core
+/// raises it on startup and answers the user's choice with the outcome.
+fn apply_packages(ui: &MainWindow, packages: &Value) {
+    let app = ui.global::<App>();
+    let phase = packages.get("phase").and_then(Value::as_str).unwrap_or("idle");
+    let can_install = packages.get("canInstall").and_then(Value::as_bool).unwrap_or(false);
+    let manual = packages.get("manual").and_then(Value::as_str).unwrap_or("");
+    let error = packages.get("error").and_then(Value::as_str).unwrap_or("");
+
+    let mut rows: Vec<PackageRow> = Vec::new();
+    if let Some(list) = packages.get("missing").and_then(Value::as_array) {
+        for entry in list {
+            let Some(name) = entry.get("name").and_then(Value::as_str) else { continue };
+            let purpose = entry.get("purpose").and_then(Value::as_str).unwrap_or("");
+            rows.push(PackageRow { name: name.into(), purpose: purpose.into() });
+        }
+    }
+
+    let (message, detail) = match phase {
+        "prompt" => {
+            let count = rows.len();
+            let message = format!(
+                "{count} component{} missing for a complete LIVI setup.",
+                if count > 1 { "s are" } else { " is" }
+            );
+            let mut detail = String::from(
+                "LIVI runs without them, but the listed features stay unavailable.\n\n",
+            );
+            if can_install {
+                detail.push_str("Install?");
+            } else {
+                detail.push_str(
+                    "No supported package manager (apt/dnf) found — install the equivalents for \
+                     your distro.",
+                );
+            }
+            (message, detail)
+        }
+        "installing" => ("Installing the missing packages…".to_string(), String::new()),
+        "done" => (
+            "All packages installed. Restart LIVI to use the features they enable.".to_string(),
+            String::new(),
+        ),
+        "stillMissing" => (
+            "Some packages are still missing after the installation.".to_string(),
+            format!("Run this manually:\n\n{manual}"),
+        ),
+        "failed" => (
+            "Could not install the packages.".to_string(),
+            format!("{error}\n\nRun this manually:\n\n{manual}"),
+        ),
+        _ => (String::new(), String::new()),
+    };
+
+    app.set_packages_items(ModelRc::new(VecModel::from(rows)));
+    app.set_packages_message(message.into());
+    app.set_packages_detail(detail.into());
+    app.set_packages_can_install(can_install);
+    app.set_packages_phase(phase.into());
+    app.set_packages_visible(phase != "idle");
 }
 
 // ---------------------------------------------------------------- settings
@@ -1502,6 +1567,20 @@ fn wire_callbacks(ui: &MainWindow, ctx: &Arc<Mutex<Ctx>>) {
                 _ => return,
             };
             ctx.lock().unwrap().client.act(action);
+        }
+    });
+
+    app.on_packages_action({
+        let ctx = ctx.clone();
+        move |action| {
+            let choice = match action.as_str() {
+                "install" => PackagesChoice::Install,
+                "never" => PackagesChoice::Never,
+                "later" => PackagesChoice::Later,
+                "seen" => PackagesChoice::Seen,
+                _ => return,
+            };
+            ctx.lock().unwrap().client.act(Action::Packages { choice });
         }
     });
 

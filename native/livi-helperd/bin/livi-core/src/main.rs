@@ -35,6 +35,7 @@ mod hwaddr;
 mod log_file;
 mod nav_text;
 mod nmea;
+mod packages;
 mod paths;
 mod power;
 mod privileged;
@@ -159,9 +160,10 @@ async fn run() -> Result<Exit, String> {
         system: Default::default(),
         devices: Default::default(),
         update: Default::default(),
+        packages: Default::default(),
         config,
     });
-    let (asks_tx, asks, dongle_asks, update_asks) = projection::ui_channels(livi);
+    let (asks_tx, asks, dongle_asks, update_asks, packages_asks) = projection::ui_channels(livi);
     let core = Arc::new(Core::new(hub, config_file, uid, quit.clone(), asks_tx));
 
     // Whatever sits there is left over, the lock says no other core runs.
@@ -180,6 +182,7 @@ async fn run() -> Result<Exit, String> {
     tokio::spawn(car_bridge::run(core.clone(), inside));
     tokio::spawn(system_volume::follow(core.clone()));
     tokio::spawn(update::run(core.clone(), update_asks));
+    tokio::spawn(packages::run(core.clone(), packages_asks));
     tokio::spawn(status_file::run(core.clone(), core.activity(), user_data.clone()));
     let res = Resources::from_env();
     tokio::spawn(audio_devices::follow(core.hub.clone(), res.gstreamer.clone()));

@@ -102,6 +102,10 @@ pub enum Action {
     DownloadUpdate,
     InstallUpdate,
     AbortUpdate,
+    /// Answers the missing-packages prompt.
+    Packages {
+        choice: PackagesChoice,
+    },
     SetDongleRadio {
         radio: Radio,
         on: bool,
@@ -119,6 +123,18 @@ pub enum MediaControl {
     Pause,
     Next,
     Prev,
+}
+
+/// The buttons the missing-packages prompt offers. Install and Never decide,
+/// Later and Seen only close the prompt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "contract.ts")]
+pub enum PackagesChoice {
+    Install,
+    Never,
+    Later,
+    Seen,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -150,6 +166,19 @@ mod tests {
     fn unit_variants_carry_only_their_tag() {
         assert_eq!(serde_json::to_value(ToCore::Resync).unwrap(), json!({ "type": "resync" }));
         assert_eq!(serde_json::to_value(Action::Quit).unwrap(), json!({ "kind": "quit" }));
+    }
+
+    #[test]
+    fn a_package_prompt_choice_names_its_button() {
+        let msg =
+            ToCore::Action { id: 2, action: Action::Packages { choice: PackagesChoice::Never } };
+        let wire = json!({
+            "type": "action",
+            "id": 2,
+            "action": { "kind": "packages", "choice": "never" }
+        });
+        assert_eq!(serde_json::to_value(&msg).unwrap(), wire);
+        assert_eq!(serde_json::from_value::<ToCore>(wire).unwrap(), msg);
     }
 
     #[test]

@@ -1,0 +1,121 @@
+// The missing-packages prompt core raises on startup, mirroring upstream's
+// Electron dialog: what a complete LIVI setup is missing, the Install / Never /
+// Later choice where the host can install, and the outcome once one ran.
+
+import { ListView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { App } from "common.slint";
+import { LiviButton } from "controls.slint";
+
+export component PackagesDialog inherits Rectangle {
+    width: 100%;
+    height: 100%;
+    background: #000000a8;
+
+    // Swallow touches on the backdrop, the card below gets its own.
+    backdrop := TouchArea { }
+
+    card := Rectangle {
+        width: min(parent.width - 60px, 560px);
+        height: min(content.preferred-height, parent.height - 40px);
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        background: Theme.card;
+        border-radius: 12px;
+        clip: true;
+        drop-shadow-blur: 24px;
+        drop-shadow-color: #00000080;
+
+        content := VerticalLayout {
+            x: 0;
+            y: 0;
+            width: 100%;
+            padding: 24px;
+            spacing: 14px;
+
+            Text {
+                text: "LIVI — Missing Packages";
+                color: Theme.primary;
+                font-family: Theme.font-family;
+                font-size: 18px;
+                font-weight: 700;
+            }
+
+            Text {
+                text: App.packages-message;
+                color: Theme.text-primary;
+                font-family: Theme.font-family;
+                font-size: 16px;
+                wrap: word-wrap;
+            }
+
+            // The manifest entries, name and purpose, scrollable on a small car panel.
+            if (App.packages-items.length > 0) : Rectangle {
+                height: min(34px * App.packages-items.length, 240px);
+                background: transparent;
+
+                ListView {
+                    for row[i] in App.packages-items : Text {
+                        text: row.purpose == ""
+                            ? row.name
+                            : row.name + " — " + row.purpose;
+                        color: Theme.text-secondary;
+                        font-family: Theme.font-family;
+                        font-size: 14px;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                }
+            }
+
+            if (App.packages-detail != "") : Text {
+                text: App.packages-detail;
+                color: Theme.text-secondary;
+                font-family: Theme.font-family;
+                font-size: 14px;
+                wrap: word-wrap;
+            }
+
+            HorizontalLayout {
+                spacing: 10px;
+                alignment: end;
+
+                if (App.packages-phase == "prompt" && App.packages-can-install) : LiviButton {
+                    text: "Now";
+                    clicked => {
+                        App.packages-action("install");
+                    }
+                }
+                if (App.packages-phase == "prompt") : LiviButton {
+                    text: "Never";
+                    outlined: true;
+                    clicked => {
+                        App.packages-action("never");
+                    }
+                }
+                if (App.packages-phase == "prompt") : LiviButton {
+                    text: "Later";
+                    outlined: true;
+                    clicked => {
+                        App.packages-action("later");
+                    }
+                }
+                if (App.packages-phase == "installing") : Text {
+                    text: "Installing the packages…";
+                    color: Theme.text-secondary;
+                    font-family: Theme.font-family;
+                    font-size: 14px;
+                    vertical-alignment: center;
+                }
+                if (App.packages-phase == "done"
+                    || App.packages-phase == "stillMissing"
+                    || App.packages-phase == "failed") : LiviButton {
+                    text: "OK";
+                    clicked => {
+                        App.packages-action("seen");
+                    }
+                }
+            }
+        }
+    }
+}

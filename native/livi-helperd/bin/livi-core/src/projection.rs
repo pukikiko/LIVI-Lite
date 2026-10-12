@@ -12,7 +12,7 @@ use livi_aa_stack::manager::{AaCmd, AaEvent, AaHandle, SessionId as AaId};
 use livi_aa_stack::media::AudioKind as AaKind;
 use livi_core_proto::config::{Config, KeyBindings};
 use livi_core_proto::input::{Input, Phase, Point};
-use livi_core_proto::message::{MediaControl, Radio};
+use livi_core_proto::message::{MediaControl, PackagesChoice, Radio};
 use livi_core_proto::state::{
     Front, Navigation, NowPlaying, PerScreen, Protocol, Screen, Sessions, State,
 };
@@ -410,6 +410,7 @@ pub struct UiSenders {
     pub spectrum: Arc<spectrum::Feed>,
     pub goodbye: mpsc::UnboundedSender<oneshot::Sender<()>>,
     pub update: mpsc::UnboundedSender<UpdateAsk>,
+    pub packages: mpsc::UnboundedSender<PackagesChoice>,
     pub activity: watch::Receiver<Activity>,
 }
 
@@ -419,8 +420,11 @@ pub struct DongleAsks {
 }
 
 pub type UpdateAsks = mpsc::UnboundedReceiver<UpdateAsk>;
+pub type PackagesAsks = mpsc::UnboundedReceiver<PackagesChoice>;
 
-pub fn ui_channels(wants: PerScreen<Front>) -> (UiSenders, UiAsks, DongleAsks, UpdateAsks) {
+pub fn ui_channels(
+    wants: PerScreen<Front>,
+) -> (UiSenders, UiAsks, DongleAsks, UpdateAsks, PackagesAsks) {
     let (wants_tx, wants_rx) = watch::channel(wants);
     let (commands_tx, commands_rx) = mpsc::unbounded_channel();
     let (input_tx, input_rx) = mpsc::unbounded_channel();
@@ -428,6 +432,7 @@ pub fn ui_channels(wants: PerScreen<Front>) -> (UiSenders, UiAsks, DongleAsks, U
     let (viewers_tx, viewers_rx) = watch::channel(0);
     let (goodbye_tx, goodbye_rx) = mpsc::unbounded_channel();
     let (update_tx, update_rx) = mpsc::unbounded_channel();
+    let (packages_tx, packages_rx) = mpsc::unbounded_channel();
     let (activity_tx, activity_rx) = watch::channel(Activity::default());
     let feed = spectrum::Feed::new();
     (
@@ -440,6 +445,7 @@ pub fn ui_channels(wants: PerScreen<Front>) -> (UiSenders, UiAsks, DongleAsks, U
             spectrum: feed.clone(),
             goodbye: goodbye_tx,
             update: update_tx,
+            packages: packages_tx,
             activity: activity_rx,
         },
         UiAsks {
@@ -452,6 +458,7 @@ pub fn ui_channels(wants: PerScreen<Front>) -> (UiSenders, UiAsks, DongleAsks, U
         },
         DongleAsks { radios: dongle_rx, link_speed_viewers: viewers_rx },
         update_rx,
+        packages_rx,
     )
 }
 
@@ -1839,6 +1846,7 @@ mod tests {
                 system: Default::default(),
                 devices: Default::default(),
                 update: Default::default(),
+                packages: Default::default(),
                 config: defaults(),
             }));
             let (tx, cmds) = mpsc::unbounded_channel();

@@ -9,7 +9,7 @@ pub mod state;
 mod contract_ts;
 
 /// Raised with every change to the shape of a message or of the state.
-pub const PROTOCOL: u32 = 3;
+pub const PROTOCOL: u32 = 4;
 
 /// "1" when stdin is a pipe from the process that started this one. The kernel
 /// closes it when that process dies, even on SIGKILL.

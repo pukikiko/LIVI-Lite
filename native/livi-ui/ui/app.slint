@@ -18,9 +18,10 @@ import {
 import { ProjectionSurface } from "projection.slint";
 import { DevicesPage } from "devices.slint";
 import { MediaPage } from "media.slint";
+import { PackagesDialog } from "packages.slint";
 import { SettingsPage } from "settings.slint";
 
-export { App, DeviceRow, MediaState } from "common.slint";
+export { App, DeviceRow, MediaState, PackageRow } from "common.slint";
 
 // One rail tab: icon-only, like the original NavRail Tabs (white active,
 // grey idle, primary on hover/press).
@@ -217,4 +218,7 @@ export component MainWindow inherits Window {
         if App.page == 0 : ProjectionSurface { }
         if App.page != 0 : Shell { }
     }
+
+    // Above the shell and the projection surface, like upstream's modal dialog.
+    if (App.packages-visible) : PackagesDialog { }
 }

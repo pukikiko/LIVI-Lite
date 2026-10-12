@@ -63,6 +63,12 @@ LIVI_GST_DEBUG=1 ./LIVI*.AppImage
 | `LIVI_NO_UI=1` | Run livi-core without starting the UI. |
 | `LIVI_UI_CMD=<command>` | Start this shell command as the UI instead. From the repo, `LIVI_UI_CMD="pnpm dev"` runs the UI with hot reload inside the compositor. |
 
+### System packages
+
+| Flag | Effect |
+| --- | --- |
+| `LIVI_PACKAGES_MANIFEST=<file>` | Probe this manifest instead of the built-in `scripts/install/packages.txt`, to test the missing-packages prompt. |
+
 ### CarPlay, Bluetooth and Wi-Fi helper
 
 | Flag | Effect |

@@ -81,24 +81,7 @@ impl Client {
 
     /// Silently dropped while core is away, a late input or action does harm.
     pub fn send(&self, msg: ToCore) {
-        let Ok(frame) = encode(&msg) else {
-            livi_log!("cannot encode {msg:?}");
-            return;
-        };
-        let mut guard = self.shared.stream.lock().unwrap();
-        let failed = match guard.as_mut() {
-            Some(stream) => match stream.write_all(&frame) {
-                Ok(()) => false,
-                Err(e) => {
-                    livi_log!("write failed: {e}");
-                    true
-                }
-            },
-            None => false,
-        };
-        if failed {
-            *guard = None;
-        }
+        write_frame(&mut self.shared.stream.lock().unwrap(), &msg);
     }
 
     pub fn act(&self, action: Action) {
@@ -134,6 +117,20 @@ pub fn spawn(client: Client, events: Sender<CoreEvent>) {
     let _ = thread::Builder::new().name("core-link".into()).spawn(move || run(client, events));
 }
 
+/// Writes one frame, dropping the stream when it does not take it.
+fn write_frame(stream: &mut Option<UnixStream>, msg: &ToCore) {
+    let Ok(frame) = encode(msg) else {
+        livi_log!("cannot encode {msg:?}");
+        return;
+    };
+    if let Some(open) = stream.as_mut() {
+        if let Err(e) = open.write_all(&frame) {
+            livi_log!("write failed: {e}");
+            *stream = None;
+        }
+    }
+}
+
 fn run(client: Client, events: Sender<CoreEvent>) {
     let shared = client.shared.clone();
     let path = socket_path();
@@ -153,8 +150,16 @@ fn run(client: Client, events: Sender<CoreEvent>) {
                         continue;
                     }
                 };
-                *shared.stream.lock().unwrap() = Some(stream);
-                client.send(ToCore::Hello { protocol: PROTOCOL, client: "livi-ui".into() });
+                // The socket becomes visible to send() here, so the hello goes
+                // out under the same lock: nothing may precede it.
+                {
+                    let mut guard = shared.stream.lock().unwrap();
+                    *guard = Some(stream);
+                    write_frame(
+                        &mut guard,
+                        &ToCore::Hello { protocol: PROTOCOL, client: "livi-ui".into() },
+                    );
+                }
                 let _ = events.send(CoreEvent::Connected(true));
                 livi_log!("connected");
 
