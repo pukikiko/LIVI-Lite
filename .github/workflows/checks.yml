@@ -67,6 +67,13 @@ jobs:
           cargo clippy --workspace --all-targets --locked -- -D warnings
           cargo test --workspace --locked
 
+      - name: Check the LIVI-Lite UI (fmt, clippy, tests)
+        working-directory: native
+        run: |
+          cargo fmt --manifest-path livi-ui/Cargo.toml --check
+          cargo clippy --manifest-path livi-ui/Cargo.toml --all-targets --locked -- -D warnings
+          cargo test --manifest-path livi-ui/Cargo.toml --locked
+
       - name: Check the dongle daemon for armv7 (clippy)
         working-directory: native
         run: cargo clippy -p livid --target armv7-unknown-linux-musleabihf --locked -- -D warnings

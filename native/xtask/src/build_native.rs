@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Additional terms: see NOTICE
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::util::{Arch, build_date, build_run, build_sha, copy_exe, exec, read, root, version};
@@ -35,7 +35,7 @@ pub fn run(arch: Arch) -> Result<(), String> {
     let manifest = root.join("native/Cargo.toml");
     let cross = arch != Arch::host();
 
-    let mut pkgs = vec!["livi-output", "livi-helperd", "livi-core", "livi-ui"];
+    let mut pkgs = vec!["livi-output", "livi-helperd", "livi-core"];
     if cfg!(target_os = "linux") {
         pkgs.push("livi-compositor");
     }
@@ -72,9 +72,39 @@ pub fn run(arch: Arch) -> Result<(), String> {
     place("livi-output", bin.join("livi-output"))?;
     place("livi-helperd", bin.join("livi-helperd"))?;
     place("livi-core", bin.join("livi-core"))?;
-    place("LIVI", bin.join("LIVI"))?;
     if cfg!(target_os = "linux") {
         place("livi-compositor", bin.join("livi-compositor"))?;
     }
+    build_ui(arch, &bin)?;
+    Ok(())
+}
+
+/// LIVI-Lite's UI is its own workspace (`native/livi-ui`) because upstream also
+/// has a `livi-ui` crate; it is built from its own manifest and staged as
+/// `livi-ui`, which is the binary livi-core starts (see resources.rs).
+fn build_ui(arch: Arch, bin: &Path) -> Result<(), String> {
+    let root = root();
+    let manifest = root.join("native/livi-ui/Cargo.toml");
+    let cross = arch != Arch::host();
+    let mut build = cargo(&manifest, &["build", "--release"])?;
+    if std::env::var_os("CI").is_some() {
+        build.arg("--locked");
+    }
+    if cross {
+        build.args(["--target", arch.triple()]);
+    }
+    exec(&mut build)?;
+
+    let mut out = target_dir(&manifest)?;
+    if cross {
+        out.push(arch.triple());
+    }
+    out.push("release");
+    copy_exe(&out.join("livi-ui"), &bin.join("livi-ui"))?;
+    println!(
+        "[build-native] {} <- {}",
+        bin.join("livi-ui").display(),
+        out.join("livi-ui").display()
+    );
     Ok(())
 }

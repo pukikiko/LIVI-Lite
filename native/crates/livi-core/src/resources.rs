@@ -132,7 +132,7 @@ impl Resources {
                 .filter(|p| p.join("lib").is_dir()),
             templates: Some(root.join("assets/linux")),
             ui: Some(UiCmd::Exec {
-                bin: root.join("out/bin/LIVI"),
+                bin: root.join("out/bin/livi-ui"),
                 args: Vec::new(),
             }),
             installer: None,
@@ -223,7 +223,7 @@ mod tests {
         assert_eq!(
             repo.ui,
             Some(UiCmd::Exec {
-                bin: PathBuf::from("/src/LIVI/out/bin/LIVI"),
+                bin: PathBuf::from("/src/LIVI/out/bin/livi-ui"),
                 args: Vec::new(),
             })
         );

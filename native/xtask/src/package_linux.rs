@@ -137,7 +137,7 @@ pub fn run(arch: Arch) -> Result<(), String> {
     fs::create_dir_all(&res).map_err(|e| e.to_string())?;
 
     let built = |name: &str| root.join("out/bin").join(name);
-    copy_exe(&built("LIVI"), &app.join("livi-ui"))?;
+    copy_exe(&built("livi-ui"), &app.join("livi-ui"))?;
     copy_exe(&built("livi-core"), &res.join("core/livi-core"))?;
     copy_exe(&built("livi-helperd"), &res.join("driver/livi-helperd"))?;
     copy_exe(&built("livi-output"), &res.join("output/livi-output"))?;
