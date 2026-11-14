@@ -48,6 +48,7 @@ LIVI_GST_DEBUG=1 ./LIVI*.AppImage
 | `LIVI_GST_SWDEC=1`          | Force software decoding (avdec_*), bypassing the hardware decoder. Use it to tell a broken hardware decoder apart from a broken stream.                                                                                                                           |
 | `LIVI_GST_SINK=<element>`   | Override the video sink (default `waylandsink` on Linux).                                                                                                                                                                                                         |
 | `LIVI_GST_PRELOAD=<lib.so>` | LD_PRELOAD a library into the livi-output child only.                                                                                                                                                                                                             |
+| `LIVI_GST_DUMP=<path>`      | Append the raw bytes pushed into the video pipeline to this file (fork-only, for analyzing an incompatible phone encoding).                                                                                                                                       |
 
 ### Compositor and Wayland
 
@@ -68,6 +69,12 @@ LIVI_GST_DEBUG=1 ./LIVI*.AppImage
 | `LIVI_UI_SETTINGS=<path>`     | With the settings page, open this settings path, e.g. `general/connections`.              |
 | `LIVI_UI_SNAPSHOT=<file.png>` | Save a picture of the UI window 3 s after start, `LIVI_UI_SNAPSHOT_MS` sets another wait. |
 | `LIVI_UI_STATE=<file.json>`   | Show this core state without a core, e.g. `native/crates/livi-ui/fixtures/dab.json`.      |
+
+### System packages (fork)
+
+| Flag                            | Effect                                                                                                           |
+| ------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `LIVI_PACKAGES_MANIFEST=<file>` | Probe this manifest instead of the built-in `scripts/install/packages.txt`, to test the missing-packages prompt. |
 
 ### CarPlay, Bluetooth and Wi-Fi helper
 

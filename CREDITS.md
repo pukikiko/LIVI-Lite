@@ -66,7 +66,9 @@ https://github.com/googlefonts/roboto
 
 ### Material Icons
 
-This application bundles icons from Google's **Material Icons**.
+This application bundles icons from Google's **Material Icons**, and the fork's
+UI (`native/livi-ui`) embeds icon paths generated from **Material Symbols** via
+`@mui/icons-material`.
 
 Material Icons are licensed under the **Apache License 2.0**.
 

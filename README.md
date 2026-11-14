@@ -2,11 +2,69 @@
   <img alt='LIVI' src='docs/media/banner.png' width="1200" />
 </p>
 
-# LIVI – Linux In-Vehicle Infotainment
+# LIVI-Lite – Linux In-Vehicle Infotainment
+
+**LIVI-Lite** is a fork of [LIVI](https://github.com/f-io/LIVI). It keeps
+upstream's Rust core (`native/crates`), native GStreamer pipeline, compositor,
+helper and dongle stack, and pairs them with its own Rust + [Slint](https://slint.dev)
+UI in `native/livi-ui`. Upstream's own Slint UI (`native/crates/livi-ui`) is not
+used by this fork.
 
 LIVI is an open-source Apple CarPlay and Android Auto head unit built in Rust with a Slint UI.
 
 It runs on Linux desktops and embedded boards as well as on macOS and Android. A native zero-copy GStreamer pipeline handles hardware-decoded video and low-latency audio. Multitouch and D-Pad navigation are built in, and it works even on very small embedded and OEM displays.
+
+> ## LIVI-Lite (this fork)
+>
+> - **Backend:** upstream's `livi-core`, unchanged in shape - the same service
+>   layer, projection drivers, helper and dongle stack as upstream.
+> - **UI:** `native/livi-ui`, the fork's own Slint surface on the software
+>   renderer. It is a standalone crate because upstream also ships a `livi-ui`;
+>   core and UI talk over livi-core's framed-JSON Unix socket
+>   (`$XDG_RUNTIME_DIR/livi/core.sock`). There is no Node, Electron, Chromium or
+>   preload layer at runtime.
+> - **Video:** `livi-output` presents decoded DMA-BUF planes directly to
+>   `livi-compositor` via `waylandsink`. The Slint window renders _below_ the
+>   video plane, and the compositor routes input UI-first, so touch still reaches
+>   the UI while projection is on screen. Swipe up from the bottom edge (or right
+>   from the left edge) to reveal the shell. On a host whose compositor has no
+>   GPU, hardware-decoder frames are converted to system memory instead of
+>   being imported (see `LIVI_RENDER_NODE`).
+> - **Fork-only features** on top of upstream: the missing-system-packages
+>   prompt (`native/crates/livi-core/src/packages.rs`), waking paired phones
+>   that have no session yet (`livi-helper-stack/src/reconnect.rs`), and the
+>   UI's own layout.
+>
+> **Build**
+>
+> ```sh
+> cd native
+> cargo xtask build-native   # livi-core, compositor, output, helperd and livi-ui
+> ```
+>
+> **Run**
+>
+> ```sh
+> out/bin/livi-core                  # livi-core starts the compositor and the UI
+> LIVI_NO_UI=1 out/bin/livi-core     # core only; run the UI yourself against it
+> out/bin/livi-ui                    # UI only, connects to a running core
+> ```
+>
+> Without a DRM device the compositor start is skipped and the UI opens as a
+> plain window on the desktop. Do not run LIVI with `sudo`: the core socket
+> lives in the user's `XDG_RUNTIME_DIR`.
+>
+> **Upstream sync:** the fork lives at
+> [pukikiko/LIVI-Lite](https://github.com/pukikiko/LIVI-Lite); its `main` tracks
+> `f-io/LIVI` `main` (`upstream` remote).
+>
+> **Limitations of the fork:** dash/aux secondary windows, the telemetry
+> dashboards, camera, DAB+ and FM, the custom page, the UI icon uploader and UI
+> zoom are not ported to the fork's UI yet. Devices, media (including the FFT
+> visualizer), the settings surface (including key bindings and the GPS data/HW
+> views), projection and the update flow are. Linux is the target platform; the
+> macOS video path (upstream draws the plane into its own UI window) has no
+> counterpart in the fork's UI yet.
 
 ## Project Status
 
@@ -262,6 +320,12 @@ Settings → General → Tab Settings.
 
 ## Installation
 
+> [!NOTE]
+> Everything below is upstream's installer and packaging. LIVI-Lite builds from
+> source (see [Clone & Build](#clone--build)); `cargo xtask package-linux` and
+> `cargo xtask package-mac` package the fork's UI, but the fork does not publish
+> downloads yet.
+
 One script installs LIVI on both desktop and headless hosts, auto-detecting which (override with `--desktop` / `--headless`). It uses apt, dnf or pacman, it runs on Debian/Ubuntu, Fedora, Arch and likely other distros, on arm64 and x86_64.
 
 ```bash
@@ -367,8 +431,8 @@ On macOS, building needs Rust and the GStreamer framework (runtime and devel pkg
 
 ```bash
 # Git clone
-git clone --branch main --single-branch https://github.com/f-io/LIVI.git \
-  && cd LIVI
+git clone --branch main --single-branch https://github.com/pukikiko/LIVI-Lite.git \
+  && cd LIVI-Lite
 
 cd native
 
