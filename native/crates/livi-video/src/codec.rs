@@ -141,19 +141,29 @@ pub fn sink_chain(sink_override: Option<&str>) -> String {
     }
 }
 
-pub fn presink(decoder: &str) -> &'static str {
+/// The element before the sink: software decoders hand out plain frames that
+/// still need converting. A hardware decoder hands out dmabufs that a
+/// GPU-composited session imports zero-copy and gets none; when the session's
+/// compositor has no GPU (`sw_compositor`: no render node, an llvmpipe/pixman
+/// session) the dmabufs are read back and the frames are converted to system
+/// memory for the sink. The four conversion threads keep the NV12 -> BGRx
+/// step (the only CPU-heavy one) inside a frame budget on the 4-core board.
+pub fn presink(decoder: &str, sw_compositor: bool) -> &'static str {
     #[cfg(target_vendor = "apple")]
     {
-        let _ = decoder;
+        let _ = (decoder, sw_compositor);
         ""
     }
     #[cfg(not(target_vendor = "apple"))]
     {
+        // NVDEC hands out plain frames as well, it shares no memory with the compositor.
         if is_hw_decoder(decoder) && !decoder.starts_with("nv") {
-            ""
-        } else {
-            "videoconvert ! "
+            if sw_compositor && decoder.starts_with("v4l2") {
+                return "videoconvert n-threads=4 ! video/x-raw,format=BGRx ! ";
+            }
+            return "";
         }
+        "videoconvert ! "
     }
 }
 
@@ -170,6 +180,7 @@ pub fn pipeline_desc(
     decoder: &str,
     cal: &str,
     sink_override: Option<&str>,
+    sw_compositor: bool,
 ) -> String {
     format!(
         "appsrc name=src is-live=true do-timestamp=true format=time \
@@ -181,7 +192,7 @@ pub fn pipeline_desc(
          ! {presink}{cal}{sink}",
         caps = caps_for(codec).to_str().unwrap_or(""),
         parser = parser_for(codec).to_str().unwrap_or(""),
-        presink = presink(decoder),
+        presink = presink(decoder, sw_compositor),
         sink = sink_chain(sink_override),
     )
 }
@@ -306,8 +317,8 @@ mod tests {
     #[cfg(not(target_os = "macos"))]
     #[test]
     fn nvdec_frames_are_converted_before_the_sink() {
-        assert_eq!(presink("nvh265dec"), "videoconvert ! ");
-        assert_eq!(presink("vah265dec"), "");
+        assert_eq!(presink("nvh265dec", false), "videoconvert ! ");
+        assert_eq!(presink("vah265dec", false), "");
     }
 }
 
@@ -317,7 +328,7 @@ mod pipeline_tests {
 
     #[test]
     fn the_description_names_source_parser_decoder_and_sink() {
-        let d = pipeline_desc(VideoCodec::H265, "avdec_h265", "", None);
+        let d = pipeline_desc(VideoCodec::H265, "avdec_h265", "", None, false);
 
         assert!(d.starts_with("appsrc name=src"));
         assert!(d.contains("caps=video/x-h265,stream-format=byte-stream"));
@@ -329,7 +340,7 @@ mod pipeline_tests {
     #[test]
     fn every_link_is_a_bang_between_two_spaces() {
         for cal in ["", "glupload ! glshader name=cal ! "] {
-            let d = pipeline_desc(VideoCodec::H264, "avdec_h264", cal, None);
+            let d = pipeline_desc(VideoCodec::H264, "avdec_h264", cal, None, false);
             let bytes = d.as_bytes();
             for (i, c) in bytes.iter().enumerate() {
                 if *c != b'!' {
@@ -343,7 +354,7 @@ mod pipeline_tests {
 
     #[test]
     fn each_stage_carries_exactly_one_element() {
-        let d = pipeline_desc(VideoCodec::H265, "avdec_h265", "", None);
+        let d = pipeline_desc(VideoCodec::H265, "avdec_h265", "", None, false);
         let stages: Vec<&str> = d.split(" ! ").collect();
 
         assert!(stages.len() >= 5, "{d}");
@@ -356,7 +367,7 @@ mod pipeline_tests {
 
     #[test]
     fn the_queue_ahead_of_the_decoder_never_leaks() {
-        let d = pipeline_desc(VideoCodec::H264, "avdec_h264", "", None);
+        let d = pipeline_desc(VideoCodec::H264, "avdec_h264", "", None, false);
         let (before, after) = d.split_once("name=dec").unwrap();
 
         assert!(!before.contains("leaky"));
@@ -370,6 +381,7 @@ mod pipeline_tests {
             "vtdec",
             "glupload ! glshader name=cal ! ",
             None,
+            false,
         );
         let i = d.find("glshader name=cal").unwrap();
 
@@ -379,16 +391,40 @@ mod pipeline_tests {
 
     #[test]
     fn an_empty_calibration_leaves_the_chain_untouched() {
-        assert!(!pipeline_desc(VideoCodec::H264, "avdec_h264", "", None).contains("glshader"));
+        assert!(
+            !pipeline_desc(VideoCodec::H264, "avdec_h264", "", None, false).contains("glshader")
+        );
     }
 
     #[cfg(not(target_os = "macos"))]
     #[test]
     fn a_software_decoder_gets_a_converter_and_a_hardware_one_does_not() {
-        assert_eq!(presink("avdec_h264"), "videoconvert ! ");
-        assert_eq!(presink("v4l2slh264dec"), "");
+        assert_eq!(presink("avdec_h264", false), "videoconvert ! ");
+        assert_eq!(presink("v4l2slh264dec", false), "");
         assert!(
-            pipeline_desc(VideoCodec::H264, "avdec_h264", "", None).contains("videoconvert ! ")
+            pipeline_desc(VideoCodec::H264, "avdec_h264", "", None, false)
+                .contains("videoconvert ! ")
+        );
+    }
+
+    #[cfg(not(target_vendor = "apple"))]
+    #[test]
+    fn a_hardware_decoder_on_a_gpu_less_compositor_is_converted() {
+        assert_eq!(
+            presink("v4l2slh264dec", true),
+            "videoconvert n-threads=4 ! video/x-raw,format=BGRx ! "
+        );
+        assert_eq!(
+            presink("v4l2h265dec", true),
+            "videoconvert n-threads=4 ! video/x-raw,format=BGRx ! "
+        );
+        let d = pipeline_desc(VideoCodec::H264, "v4l2slh264dec", "", None, true);
+        assert!(d.contains("v4l2slh264dec name=dec"));
+        assert!(d.contains("videoconvert n-threads=4 ! video/x-raw,format=BGRx ! waylandsink"));
+        // a GPU compositor session keeps the zero-copy dmabuf handoff
+        assert!(
+            !pipeline_desc(VideoCodec::H264, "v4l2slh264dec", "", None, false)
+                .contains("videoconvert")
         );
     }
 
@@ -402,7 +438,7 @@ mod pipeline_tests {
             "fakesink name=sink sync=false"
         );
         assert!(
-            pipeline_desc(VideoCodec::H264, "avdec_h264", "", Some("fakesink"))
+            pipeline_desc(VideoCodec::H264, "avdec_h264", "", Some("fakesink"), false)
                 .contains("fakesink name=sink")
         );
     }
@@ -421,6 +457,6 @@ mod pipeline_tests {
     fn the_mac_sink_fills_the_view_and_ignores_the_override() {
         assert!(sink_chain(Some("fakesink")).starts_with("glimagesink name=sink"));
         assert!(sink_chain(None).contains("force-aspect-ratio=false"));
-        assert_eq!(presink("avdec_h264"), "");
+        assert_eq!(presink("avdec_h264", false), "");
     }
 }

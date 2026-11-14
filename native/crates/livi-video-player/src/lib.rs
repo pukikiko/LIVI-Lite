@@ -315,6 +315,10 @@ impl Player {
         with_cal: bool,
         handle: usize,
     ) -> Option<gst::Pipeline> {
+        // No render node: the compositor has no GPU EGL (an llvmpipe/pixman
+        // session), so a hardware decoder's dmabufs cannot be imported and
+        // are converted to system memory for the sink instead.
+        let sw_compositor = render_gpu().is_none();
         let describe = |cal: bool| {
             livi_video::codec::pipeline_desc(
                 codec,
@@ -325,6 +329,7 @@ impl Player {
                     ""
                 },
                 livi_video::codec::sink_override().as_deref(),
+                sw_compositor,
             )
         };
 
@@ -371,6 +376,17 @@ impl Player {
         };
         if data.is_empty() {
             return false;
+        }
+        // Temporary phone-stream capture (LIVI_GST_DUMP=path): append raw
+        // pushed bytes so an incompatible phone encoding can be analyzed.
+        if let Ok(path) = std::env::var("LIVI_GST_DUMP")
+            && let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+        {
+            use std::io::Write;
+            let _ = f.write_all(data);
         }
         src.push_buffer(gst::Buffer::from_slice(data.to_vec()))
             .is_ok()

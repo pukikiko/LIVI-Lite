@@ -25,6 +25,9 @@ pub struct State {
     pub mfi: Mfi,
     pub telemetry: Map<String, Value>,
     pub update: Update,
+    /// The host's missing system packages, prompted on the UI like upstream's
+    /// package check does.
+    pub packages: Packages,
     pub cluster: Cluster,
     pub dab: Dab,
     #[serde(default)]
@@ -49,6 +52,7 @@ impl State {
             "mfi" => self.mfi = read(value)?,
             "telemetry" => self.telemetry = read(value)?,
             "update" => self.update = read(value)?,
+            "packages" => self.packages = read(value)?,
             "cluster" => self.cluster = read(value)?,
             "dab" => self.dab = read(value)?,
             "fm" => self.fm = read(value)?,
@@ -79,6 +83,43 @@ fn overlay(base: &mut Value, top: Value) {
         }
         (base, top) => *base = top,
     }
+}
+
+/// The missing-packages prompt: what is missing, and what came of asking.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Packages {
+    pub phase: PackagesPhase,
+    /// The manifest entries that are missing, in manifest order.
+    pub missing: Vec<PackageItem>,
+    /// Whether this host can install them (a package manager and pkexec).
+    pub can_install: bool,
+    /// What installs them by hand, sudo included.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub manual: String,
+    /// Why the installation failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PackagesPhase {
+    #[default]
+    Idle,
+    Prompt,
+    Installing,
+    Done,
+    StillMissing,
+    Failed,
+}
+
+/// One manifest entry, as the prompt lists it.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackageItem {
+    pub name: String,
+    pub purpose: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]

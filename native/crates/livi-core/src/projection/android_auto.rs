@@ -619,6 +619,7 @@ mod tests {
             system: Default::default(),
             devices: Default::default(),
             update: Default::default(),
+            packages: Default::default(),
             cluster: Default::default(),
             dab: Default::default(),
             fm: Default::default(),

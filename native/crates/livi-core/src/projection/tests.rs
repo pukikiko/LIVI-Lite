@@ -76,6 +76,7 @@ impl Rig {
             system: Default::default(),
             devices: Default::default(),
             update: Default::default(),
+            packages: Default::default(),
             cluster: Default::default(),
             dab: Default::default(),
             fm: Default::default(),
@@ -1336,6 +1337,51 @@ async fn the_phone_hands_the_screen_back() {
         active: false,
     });
     assert_eq!(rig.front(), Front::Livi);
+}
+
+#[tokio::test]
+async fn the_ui_returns_to_projection_after_the_phone_asked_for_the_car_ui() {
+    let mut rig = Rig::new();
+    rig.aa_connect(5, true);
+    rig.want(Front::Projection);
+    assert_eq!(rig.front(), Front::Projection);
+    rig.aa_drain();
+
+    // Android Auto's Exit asks for the car's own UI while the UI still
+    // reports Projection, then the user taps the projection tab again.
+    rig.p.on_aa(AaEvent::HostUiRequested { id: 5 });
+    assert_eq!(rig.front(), Front::Livi);
+
+    rig.want(Front::Projection);
+    assert_eq!(rig.front(), Front::Projection);
+    assert_eq!(
+        rig.aa_drain(),
+        [command(5, Command::Home), aa(5, SessionCmd::Keyframe)]
+    );
+}
+
+#[tokio::test]
+async fn the_ui_can_return_to_projection_after_a_call_restored_the_front() {
+    let mut rig = Rig::new();
+    rig.connect(1, true);
+    rig.want(Front::Livi);
+
+    // A call brings projection forward, the user follows it.
+    rig.p.on_event(CpEvent::Call {
+        id: 1,
+        phase: CallPhase::Ringing,
+    });
+    assert_eq!(rig.front(), Front::Projection);
+    rig.want(Front::Projection);
+    rig.p.on_event(CpEvent::Call {
+        id: 1,
+        phase: CallPhase::Ended,
+    });
+    assert_eq!(rig.front(), Front::Livi);
+
+    // The projection tab still has to bring the phone back.
+    rig.want(Front::Projection);
+    assert_eq!(rig.front(), Front::Projection);
 }
 
 #[tokio::test]

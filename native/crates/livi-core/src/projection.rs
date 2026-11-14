@@ -19,7 +19,7 @@ use livi_core_proto::config::{Config, KeyBindings};
 use livi_core_proto::helper_events::{HelperKind, NowPlayingPatch};
 use livi_core_proto::ids::Ids;
 use livi_core_proto::input::{Input, Phase, Point};
-use livi_core_proto::message::{MediaControl, Radio};
+use livi_core_proto::message::{MediaControl, PackagesChoice, Radio};
 use livi_core_proto::state::{
     Front, Navigation, NowPlaying, PerScreen, Protocol, Screen, Sessions, State, VideoPlayback,
 };
@@ -465,6 +465,7 @@ pub struct UiSenders {
     pub spectrum: Arc<spectrum::Feed>,
     pub goodbye: mpsc::UnboundedSender<oneshot::Sender<()>>,
     pub update: mpsc::UnboundedSender<UpdateAsk>,
+    pub packages: mpsc::UnboundedSender<PackagesChoice>,
     pub activity: watch::Receiver<Activity>,
     pub radio: mpsc::UnboundedSender<crate::radio::RadioAsk>,
     pub ap_ready: watch::Sender<bool>,
@@ -476,8 +477,11 @@ pub struct DongleAsks {
 }
 
 pub type UpdateAsks = mpsc::UnboundedReceiver<UpdateAsk>;
+pub type PackagesAsks = mpsc::UnboundedReceiver<PackagesChoice>;
 
-pub fn ui_channels(wants: PerScreen<Front>) -> (UiSenders, UiAsks, DongleAsks, UpdateAsks) {
+pub fn ui_channels(
+    wants: PerScreen<Front>,
+) -> (UiSenders, UiAsks, DongleAsks, UpdateAsks, PackagesAsks) {
     let (wants_tx, wants_rx) = watch::channel(wants);
     let (commands_tx, commands_rx) = mpsc::unbounded_channel();
     let (input_tx, input_rx) = mpsc::unbounded_channel();
@@ -485,6 +489,7 @@ pub fn ui_channels(wants: PerScreen<Front>) -> (UiSenders, UiAsks, DongleAsks, U
     let (viewers_tx, viewers_rx) = watch::channel(0);
     let (goodbye_tx, goodbye_rx) = mpsc::unbounded_channel();
     let (update_tx, update_rx) = mpsc::unbounded_channel();
+    let (packages_tx, packages_rx) = mpsc::unbounded_channel();
     let (activity_tx, activity_rx) = watch::channel(Activity::default());
     let (radio_tx, radio_rx) = mpsc::unbounded_channel();
     let (ap_ready_tx, ap_ready_rx) = watch::channel(true);
@@ -499,6 +504,7 @@ pub fn ui_channels(wants: PerScreen<Front>) -> (UiSenders, UiAsks, DongleAsks, U
             spectrum: feed.clone(),
             goodbye: goodbye_tx,
             update: update_tx,
+            packages: packages_tx,
             activity: activity_rx,
             radio: radio_tx.clone(),
             ap_ready: ap_ready_tx,
@@ -521,6 +527,7 @@ pub fn ui_channels(wants: PerScreen<Front>) -> (UiSenders, UiAsks, DongleAsks, U
             link_speed_viewers: viewers_rx,
         },
         update_rx,
+        packages_rx,
     )
 }
 

@@ -20,6 +20,6 @@ pub mod state;
 pub mod telemetry;
 pub mod theme;
 
-pub const PROTOCOL: u32 = 11;
+pub const PROTOCOL: u32 = 12;
 
 pub const LIFELINE_ENV: &str = "LIVI_LIFELINE";

@@ -24,6 +24,7 @@ mod helper;
 mod http;
 mod hub;
 mod mfi;
+mod packages;
 mod projection;
 mod radio;
 pub mod resources;
@@ -122,6 +123,7 @@ pub async fn run(
         },
         devices: Default::default(),
         update: Default::default(),
+        packages: Default::default(),
         cluster: Default::default(),
         dab: Default::default(),
         fm: Default::default(),
@@ -129,7 +131,7 @@ pub async fn run(
         mfi: Default::default(),
         config,
     });
-    let (asks_tx, asks, dongle_asks, update_asks) = projection::ui_channels(wants);
+    let (asks_tx, asks, dongle_asks, update_asks, packages_asks) = projection::ui_channels(wants);
     let core = Arc::new(
         Core::new(hub, config_file, uid, quit.clone(), asks_tx)
             .with_mfi(user_data.join("mfi"))
@@ -159,6 +161,7 @@ pub async fn run(
         update_asks,
         res.installer.clone(),
     ));
+    tokio::spawn(packages::run(core.clone(), packages_asks));
     tokio::spawn(fonts::follow(core.clone(), user_data.join("fonts")));
     files::state_files::start(&core, core.activity(), &user_data);
     tokio::spawn(audio::audio_devices::follow(

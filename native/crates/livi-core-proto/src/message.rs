@@ -114,6 +114,10 @@ pub enum Action {
     DownloadUpdate,
     InstallUpdate,
     AbortUpdate,
+    /// Answers the missing-packages prompt.
+    Packages {
+        choice: PackagesChoice,
+    },
     DabScan,
     DabStopScan,
     #[serde(rename_all = "camelCase")]
@@ -182,6 +186,17 @@ pub enum MediaControl {
     Pause,
     Next,
     Prev,
+}
+
+/// The buttons the missing-packages prompt offers. Install and Never decide,
+/// Later and Seen only close the prompt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PackagesChoice {
+    Install,
+    Never,
+    Later,
+    Seen,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -267,6 +282,23 @@ mod tests {
             .unwrap(),
             json!({ "kind": "removeMfi", "file": "certificate" })
         );
+    }
+
+    #[test]
+    fn a_package_prompt_choice_names_its_button() {
+        let msg = ToCore::Action {
+            id: 2,
+            action: Action::Packages {
+                choice: PackagesChoice::Never,
+            },
+        };
+        let wire = json!({
+            "type": "action",
+            "id": 2,
+            "action": { "kind": "packages", "choice": "never" }
+        });
+        assert_eq!(serde_json::to_value(&msg).unwrap(), wire);
+        assert_eq!(serde_json::from_value::<ToCore>(wire).unwrap(), msg);
     }
 
     #[test]

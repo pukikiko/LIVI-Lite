@@ -26,7 +26,9 @@ impl Projection {
         let last = std::mem::replace(&mut self.asked, asked);
         let camera = self.reverse_camera();
         for screen in [Screen::Main, Screen::Cluster, Screen::Aux] {
-            if asked.get(screen) != last.get(screen) && !(camera && screen == Screen::Main) {
+            // Against wants, not last: core may have moved a screen on its own
+            // (host_ui, attention), and the same report has to bring it back.
+            if asked.get(screen) != self.wants.get(screen) && !(camera && screen == Screen::Main) {
                 *self.wants.get_mut(screen) = *asked.get(screen);
             }
         }
