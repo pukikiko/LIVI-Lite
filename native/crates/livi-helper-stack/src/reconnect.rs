@@ -206,6 +206,25 @@ impl Paging for Bluez {
             }
             Ok(Err(e)) => {
                 println!("[bt] {mac} page failed: {e}");
+                if stale_busy(&e) {
+                    // BlueZ can keep an ACL/profile attempt marked as busy
+                    // after the phone dropped it (the policy plugin then keeps
+                    // retrying by itself). A page against that state fails
+                    // forever with br-connection-busy even though Device1
+                    // reports Connected=false. Disconnect clears the stale
+                    // attempt; then the profile poke can create a real link.
+                    println!("[bt] {mac} busy, clearing the stale connection");
+                    let _ = tokio::time::timeout(PING_TIMEOUT, disconnect(&self.conn, &path)).await;
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    match tokio::time::timeout(PING_TIMEOUT, page(&self.conn, &path, wake)).await {
+                        Ok(Ok(())) => {
+                            println!("[bt] {mac} connected after clearing the stale link");
+                            return Some(true);
+                        }
+                        Ok(Err(e)) => println!("[bt] {mac} retry failed: {e}"),
+                        Err(_) => println!("[bt] {mac} retry timed out"),
+                    }
+                }
                 Some(false)
             }
             Err(_) => Some(false),
@@ -318,6 +337,11 @@ async fn page(conn: &Connection, path: &str, uuid: Option<&str>) -> Result<(), z
         }
     }
     Ok(())
+}
+
+fn stale_busy(error: &zbus::Error) -> bool {
+    let message = error.to_string();
+    message.contains("br-connection-busy") || message.contains("InProgress")
 }
 
 async fn disconnect(conn: &Connection, path: &str) -> Result<(), zbus::Error> {
