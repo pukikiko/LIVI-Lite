@@ -158,7 +158,17 @@ fn classify_on_initial_commit(state: &mut LiviState, idx: usize) {
     {
         screen_idx = i;
     }
-    let is_dialog = app_id.as_deref() != Some(state.output_app_id.as_str());
+    // Slint's winit software window does not always propagate the app id
+    // requested by `slint::set_xdg_app_id`; the title is the stable marker
+    // its UI windows already use. Treating the main UI as a dialog put its
+    // opaque projection placeholder above the video plane in the damage
+    // tracker's reverse draw order.
+    let title_is_ui = title
+        .as_deref()
+        .and_then(|t| t.strip_prefix("livi:"))
+        .and_then(|role| state.screen_idx_by_role(role))
+        .is_some_and(|i| i == screen_idx);
+    let is_dialog = app_id.as_deref() != Some(state.output_app_id.as_str()) && !title_is_ui;
     state.toplevels[idx].screen_idx = screen_idx;
     state.toplevels[idx].kind = if is_dialog { Kind::Dialog } else { Kind::Ui };
     log::info!(

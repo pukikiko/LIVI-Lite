@@ -481,10 +481,14 @@ pub fn run(
 ) -> Result<(), Box<dyn std::error::Error>> {
     KIOSK.with_borrow_mut(|k| *k = Some(Box::new(kiosk)));
     PICK.with_borrow_mut(|p| *p = pick);
-    let ui = AppWindow::new()?;
+    // `set_xdg_app_id` configures the next toplevel created, so it has to
+    // run before AppWindow::new(). The winit software window does not carry
+    // it on this build (the compositor uses the `livi:<role>` title as the
+    // fallback), but the ordering is the supported one.
     slint::set_xdg_app_id(
         std::env::var("LIVI_OUTPUT_APP_ID").unwrap_or_else(|_| "dev.f-io.livi".into()),
     )?;
+    let ui = AppWindow::new()?;
     ui.set_bands(ModelRc::from(Rc::new(VecModel::from(vec![0.0f32; BANDS]))));
     ui.set_clock(clock::now_text().into());
     ui.global::<DashState>().set_clock(clock::now_text().into());

@@ -213,11 +213,18 @@ fn collect_elements(state: &mut LiviState, screen_idx: usize) -> Vec<LiviElement
     }
 
     let renderer = state.renderer.as_mut().unwrap();
-    for t in state
-        .toplevels
-        .iter()
-        .filter(|t| t.kind == Kind::Ui && t.screen_idx == screen_idx && !t.clear)
-    {
+    // Elements are collected front-to-back: OutputDamageTracker draws them
+    // in reverse. Put the projection video above the main UI (which paints
+    // the opaque "phone connected" projection placeholder), but below the
+    // dialogs collected above. This is what lets the projected picture show
+    // once the phone starts streaming.
+    for &vi in state.video_order.iter().rev() {
+        let Some(t) = state.toplevels.get(vi) else {
+            continue;
+        };
+        if t.kind != Kind::Video || t.screen_idx != screen_idx || !t.visible {
+            continue;
+        }
         elements.extend(
             render_elements_from_surface_tree::<_, WaylandSurfaceRenderElement<GlesRenderer>>(
                 renderer,
@@ -232,13 +239,11 @@ fn collect_elements(state: &mut LiviState, screen_idx: usize) -> Vec<LiviElement
         );
     }
 
-    for &vi in state.video_order.iter().rev() {
-        let Some(t) = state.toplevels.get(vi) else {
-            continue;
-        };
-        if t.kind != Kind::Video || t.screen_idx != screen_idx || !t.visible {
-            continue;
-        }
+    for t in state
+        .toplevels
+        .iter()
+        .filter(|t| t.kind == Kind::Ui && t.screen_idx == screen_idx && !t.clear)
+    {
         elements.extend(
             render_elements_from_surface_tree::<_, WaylandSurfaceRenderElement<GlesRenderer>>(
                 renderer,
